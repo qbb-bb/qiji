@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ResultVisualizationDialog</class>
+ <widget class="QDialog" name="ResultVisualizationDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>1380</width><height>840</height></rect></property>
+  <property name="minimumSize"><size><width>700</width><height>440</height></size></property>
+  <property name="windowTitle"><string>标定误差与三维位姿</string></property>
+  <property name="styleSheet"><string notr="true">QDialog{background:#171d27;color:#e4edf7;} QLabel{color:#dbe9f6;} QTableWidget{background:#15212e;color:#e4edf7;gridline-color:#35485e;} QHeaderView::section{background:#29374a;color:#e4edf7;padding:4px;} QComboBox,QPushButton{background:#29374a;color:#e4edf7;border:1px solid #40536a;border-radius:5px;padding:6px;} QWidget#canvas_host{background:#101923;border:1px solid #40536a;border-radius:5px;}</string></property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item><layout class="QHBoxLayout" name="controlsLayout">
+    <item><widget class="QLabel" name="view_label"><property name="text"><string>视图</string></property></widget></item>
+    <item><widget class="QComboBox" name="view_combo"><item><property name="text"><string>全局误差矢量图</string></property></item><item><property name="text"><string>单张误差矢量图</string></property></item><item><property name="text"><string>三维：板动，相机固定</string></property></item><item><property name="text"><string>三维：相机动，板固定</string></property></item></widget></item>
+    <item><widget class="QLabel" name="sample_label"><property name="text"><string>图片</string></property></widget></item>
+    <item><widget class="QComboBox" name="sample_combo"/></item>
+    <item><widget class="QPushButton" name="fit_button"><property name="text"><string>适应窗口</string></property></widget></item>
+    <item><widget class="QPushButton" name="svg_button"><property name="text"><string>打开 SVG</string></property></widget></item>
+    <item><spacer name="horizontalSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint"><size><width>40</width><height>20</height></size></property></spacer></item>
+    <item><widget class="QPushButton" name="close_button"><property name="text"><string>关闭</string></property></widget></item>
+   </layout></item>
+   <item><widget class="QLabel" name="summary_label"><property name="wordWrap"><bool>true</bool></property><property name="text"><string>误差向量</string></property></widget></item>
+   <item><widget class="QLabel" name="statistics_label"><property name="wordWrap"><bool>true</bool></property><property name="styleSheet"><string notr="true">background:#243245;color:#e4edf7;border-radius:4px;padding:6px;</string></property><property name="text"><string>方向与误差分布</string></property></widget></item>
+   <item><widget class="QSplitter" name="visual_splitter"><property name="orientation"><enum>Qt::Vertical</enum></property>
+    <widget class="QWidget" name="canvas_host"><layout class="QVBoxLayout" name="canvas_layout"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property></layout></widget>
+    <widget class="QTableWidget" name="error_table"><property name="minimumSize"><size><width>0</width><height>145</height></size></property><property name="alternatingRowColors"><bool>true</bool></property><property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property><property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property><column><property name="text"><string>图片</string></property></column><column><property name="text"><string>重投影 X</string></property></column><column><property name="text"><string>重投影 Y</string></property></column><column><property name="text"><string>ΔX (px)</string></property></column><column><property name="text"><string>ΔY (px)</string></property></column><column><property name="text"><string>误差 (px)</string></property></column></widget>
+   </widget></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

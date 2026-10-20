@@ -1,0 +1,806 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<ui version="4.0">
+  <class>CalibrationWindow</class>
+  <widget class="QMainWindow" name="CalibrationWindow">
+    <property name="geometry">
+      <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>1623</width>
+        <height>860</height>
+      </rect>
+    </property>
+    <property name="windowTitle">
+      <string>相机标定工作台</string>
+    </property>
+    <property name="styleSheet">
+      <string notr="true">QMainWindow,QWidget{background:#171c26;color:#e8edf7;}
+QPushButton{min-height:38px;padding:0 16px;background:#2867d6;color:white;border:0;border-radius:7px;font-weight:600;}
+QPushButton:hover{background:#3678e6;} QPushButton:disabled{background:#303746;color:#747f94;}
+QComboBox,QSpinBox,QDoubleSpinBox{min-height:34px;background:#0e131b;border:1px solid #354054;border-radius:6px;padding:0 8px;}
+QListWidget,QTextEdit{background:#0e131b;border:1px solid #2c3545;border-radius:8px;padding:6px;}
+QLabel#homeTitle,QLabel#calibrationTitle{font-size:25px;font-weight:700;}
+danmucamera--ImageLabel{color:#8c98ad;background:#0e131b;border:1px solid #2c3545;border-radius:8px;}
+QPushButton#refresh_button,QPushButton#disconnect_button,QPushButton#home_retake_button,QPushButton#retake_button,QPushButton#delete_button,QPushButton#back_button{background:#354258;color:#e0e9f7;}
+QPushButton#refresh_button:hover,QPushButton#disconnect_button:hover,QPushButton#home_retake_button:hover,QPushButton#retake_button:hover,QPushButton#delete_button:hover,QPushButton#back_button:hover{background:#44536e;}
+QPushButton#enter_calibration_button,QPushButton#run_button{background:#168b70;}
+QPushButton#guided_button{background:#167d55;}
+QPushButton#enter_calibration_button:hover,QPushButton#run_button:hover{background:#20a887;}
+QPushButton#guided_button:hover{background:#21a46e;}
+QPushButton:disabled{background:#303746;color:#747f94;}
+QComboBox#calibration_type_combo{min-width:175px;}
+</string>
+    </property>
+    <widget class="QWidget" name="centralwidget">
+      <layout class="QVBoxLayout" name="centralLayout">
+        <property name="leftMargin">
+          <number>0</number>
+        </property>
+        <property name="topMargin">
+          <number>0</number>
+        </property>
+        <property name="rightMargin">
+          <number>0</number>
+        </property>
+        <property name="bottomMargin">
+          <number>0</number>
+        </property>
+        <item>
+          <widget class="QStackedWidget" name="pages">
+            <widget class="QWidget" name="home_page">
+              <layout class="QVBoxLayout" name="homeRoot">
+                <property name="spacing">
+                  <number>14</number>
+                </property>
+                <property name="leftMargin">
+                  <number>20</number>
+                </property>
+                <property name="topMargin">
+                  <number>18</number>
+                </property>
+                <property name="rightMargin">
+                  <number>20</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>18</number>
+                </property>
+                <item>
+                  <layout class="QHBoxLayout" name="titleRow">
+                    <item>
+                      <widget class="QLabel" name="homeTitle">
+                        <property name="text">
+                          <string>相机采集系统</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <spacer name="titleSpacer">
+                        <property name="orientation">
+                          <enum>Qt::Horizontal</enum>
+                        </property>
+                        <property name="sizeHint" stdset="0">
+                          <size>
+                            <width>40</width>
+                            <height>20</height>
+                          </size>
+                        </property>
+                      </spacer>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="connection_status">
+                        <property name="text">
+                          <string>● 未连接</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <layout class="QVBoxLayout" name="cameraControls">
+                    <item>
+                      <layout class="QHBoxLayout" name="deviceActions">
+                        <item>
+                          <widget class="QComboBox" name="camera_combo">
+                            <property name="minimumSize">
+                              <size>
+                                <width>340</width>
+                                <height>36</height>
+                              </size>
+                            </property>
+                            <property name="toolTip">
+                              <string>可选择 SDK、物理设备以及 RGB/灰度/深度信号</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QLabel" name="resolutionLabel">
+                            <property name="text">
+                              <string>分辨率</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QComboBox" name="resolution_combo">
+                            <property name="toolTip">
+                              <string>标定参数与图像分辨率绑定；实际使用相机时必须保持相同分辨率</string>
+                            </property>
+                            <item>
+                              <property name="text">
+                                <string>640 × 480</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>1280 × 720（推荐）</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>1280 × 800（Gemini 深度）</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>1920 × 1080</string>
+                              </property>
+                            </item>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QCheckBox" name="disable_emitter_checkbox">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="toolTip">
+                              <string>连接后可直接切换红外投射器；红外灰度流需关闭投射器后才能进行内参标定</string>
+                            </property>
+                            <property name="text">
+                              <string>关闭红外投射器</string>
+                            </property>
+                            <property name="checked">
+                              <bool>true</bool>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="refresh_button">
+                            <property name="text">
+                              <string>刷新设备/信号</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="connect_button">
+                            <property name="text">
+                              <string>连接</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="start_stop_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="toolTip">
+                              <string>连接只锁定设备和参数；启动后才打开相机并开始实时采流</string>
+                            </property>
+                            <property name="text">
+                              <string>启动相机</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="disconnect_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>断开</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                    <item>
+                      <layout class="QHBoxLayout" name="captureActions">
+                        <item>
+                          <widget class="QPushButton" name="home_capture_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>拍摄</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="home_save_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>保存图片</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="home_retake_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>取消 / 重拍</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <spacer name="cameraSpacer">
+                            <property name="orientation">
+                              <enum>Qt::Horizontal</enum>
+                            </property>
+                            <property name="sizeHint" stdset="0">
+                              <size>
+                                <width>34</width>
+                                <height>17</height>
+                              </size>
+                            </property>
+                          </spacer>
+                        </item>
+                        <item>
+                          <widget class="QLabel" name="calibrationTypeLabel">
+                            <property name="text">
+                              <string>标定类型</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QComboBox" name="calibration_type_combo">
+                            <item>
+                              <property name="text">
+                                <string>单目内参</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>双目标定（规划中）</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>外参标定（规划中）</string>
+                              </property>
+                            </item>
+                            <item>
+                              <property name="text">
+                                <string>手眼标定（规划中）</string>
+                              </property>
+                            </item>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="enter_calibration_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="toolTip">
+                              <string>只有 RGB 或红外灰度信号可进行相机内参标定</string>
+                            </property>
+                            <property name="text">
+                              <string>进入内参标定  →</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <widget class="QLabel" name="signal_notice">
+                    <property name="text">
+                      <string>请选择设备信号。深度流仅用于观察，不能进入内参标定。</string>
+                    </property>
+                    <property name="wordWrap">
+                      <bool>true</bool>
+                    </property>
+                  </widget>
+                </item>
+                <item>
+                  <widget class="QSplitter" name="home_image_splitter">
+                    <property name="orientation">
+                      <enum>Qt::Horizontal</enum>
+                    </property>
+                    <property name="childrenCollapsible">
+                      <bool>false</bool>
+                    </property>
+                    <widget class="danmucamera::ImageLabel" name="home_live_view">
+                      <property name="placeholder" stdset="0">
+                        <string>实时视频</string>
+                      </property>
+                    </widget>
+                    <widget class="danmucamera::ImageLabel" name="home_capture_view">
+                      <property name="visible">
+                        <bool>false</bool>
+                      </property>
+                      <property name="placeholder" stdset="0">
+                        <string>本次拍摄图片（尚未保存）</string>
+                      </property>
+                    </widget>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="calibration_page">
+              <layout class="QVBoxLayout" name="calibrationRoot">
+                <property name="spacing">
+                  <number>10</number>
+                </property>
+                <property name="leftMargin">
+                  <number>18</number>
+                </property>
+                <property name="topMargin">
+                  <number>14</number>
+                </property>
+                <property name="rightMargin">
+                  <number>18</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>16</number>
+                </property>
+                <item>
+                  <layout class="QHBoxLayout" name="calibrationHeader">
+                    <item>
+                      <widget class="QPushButton" name="back_button">
+                        <property name="text">
+                          <string>← 返回</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="calibrationTitle">
+                        <property name="text">
+                          <string>相机内参标定</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <spacer name="headerSpacer">
+                        <property name="orientation">
+                          <enum>Qt::Horizontal</enum>
+                        </property>
+                        <property name="sizeHint" stdset="0">
+                          <size>
+                            <width>40</width>
+                            <height>20</height>
+                          </size>
+                        </property>
+                      </spacer>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="calibration_connection_status">
+                        <property name="styleSheet">
+                          <string notr="true">color:#ff6573;</string>
+                        </property>
+                        <property name="text">
+                          <string>● 未连接</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QPushButton" name="calibration_start_stop_button">
+                        <property name="enabled">
+                          <bool>false</bool>
+                        </property>
+                        <property name="toolTip">
+                          <string>与首页的相机启动/关闭按钮完全同步</string>
+                        </property>
+                        <property name="text">
+                          <string>启动相机</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="calibration_status">
+                        <property name="text">
+                          <string>准备拍摄标定板</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <layout class="QHBoxLayout" name="calibrationSettings">
+                    <item>
+                      <widget class="QLabel" name="boardWidthLabel">
+                        <property name="text">
+                          <string>横向内角点</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QSpinBox" name="board_width_spin">
+                        <property name="minimum">
+                          <number>2</number>
+                        </property>
+                        <property name="maximum">
+                          <number>30</number>
+                        </property>
+                        <property name="value">
+                          <number>7</number>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="boardHeightLabel">
+                        <property name="text">
+                          <string>纵向内角点</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QSpinBox" name="board_height_spin">
+                        <property name="minimum">
+                          <number>2</number>
+                        </property>
+                        <property name="maximum">
+                          <number>30</number>
+                        </property>
+                        <property name="value">
+                          <number>6</number>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="squareSizeLabel">
+                        <property name="text">
+                          <string>方格边长(m)</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QDoubleSpinBox" name="square_size_spin">
+                        <property name="decimals">
+                          <number>4</number>
+                        </property>
+                        <property name="minimum">
+                          <double>0.000100000000000</double>
+                        </property>
+                        <property name="maximum">
+                          <double>10.000000000000000</double>
+                        </property>
+                        <property name="value">
+                          <double>0.060000000000000</double>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <spacer name="settingsSpacer">
+                        <property name="orientation">
+                          <enum>Qt::Horizontal</enum>
+                        </property>
+                        <property name="sizeHint" stdset="0">
+                          <size>
+                            <width>40</width>
+                            <height>20</height>
+                          </size>
+                        </property>
+                      </spacer>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="sample_count_label">
+                        <property name="text">
+                          <string>有效样本 0 / 13</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <layout class="QHBoxLayout" name="boardPhysicalSizeRow">
+                    <item>
+                      <widget class="QLabel" name="boardPhysicalWidthLabel">
+                        <property name="text"><string>标定板外形宽度(m)</string></property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QDoubleSpinBox" name="board_physical_width_spin">
+                        <property name="toolTip"><string>用于自动引导框的长宽比例。0 表示按特征点行列与间距估算；外边距较大时可输入实际板面宽度。</string></property>
+                        <property name="decimals"><number>4</number></property>
+                        <property name="minimum"><double>0.000000000000000</double></property>
+                        <property name="maximum"><double>10.000000000000000</double></property>
+                        <property name="singleStep"><double>0.010000000000000</double></property>
+                        <property name="specialValueText"><string>自动</string></property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="boardPhysicalHeightLabel">
+                        <property name="text"><string>标定板外形高度(m)</string></property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QDoubleSpinBox" name="board_physical_height_spin">
+                        <property name="toolTip"><string>用于自动引导框的长宽比例。0 表示自动估算；手动输入时需同时填写外形宽度和高度。</string></property>
+                        <property name="decimals"><number>4</number></property>
+                        <property name="minimum"><double>0.000000000000000</double></property>
+                        <property name="maximum"><double>10.000000000000000</double></property>
+                        <property name="singleStep"><double>0.010000000000000</double></property>
+                        <property name="specialValueText"><string>自动</string></property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QLabel" name="boardPhysicalNote">
+                        <property name="text"><string>仅用于引导框比例；标定计算仍使用上方格距</string></property>
+                        <property name="styleSheet"><string notr="true">color:#8c98ad;</string></property>
+                      </widget>
+                    </item>
+                    <item>
+                      <spacer name="boardPhysicalSpacer">
+                        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                        <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+                      </spacer>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <widget class="QGroupBox" name="initial_intrinsics_group">
+                    <property name="title"><string>初始内参 / 引导投影</string></property>
+                    <layout class="QVBoxLayout" name="initialIntrinsicsLayout">
+                      <item>
+                        <widget class="QCheckBox" name="auto_initial_checkbox">
+                          <property name="text"><string>自动估计初值（推荐）</string></property>
+                          <property name="checked"><bool>true</bool></property>
+                        </widget>
+                      </item>
+                      <item>
+                        <widget class="QCheckBox" name="guide_use_initial_checkbox">
+                          <property name="text"><string>使用下方内参和畸变绘制引导框（标定求解仍可自动估计初值）</string></property>
+                        </widget>
+                      </item>
+                      <item>
+                        <layout class="QHBoxLayout" name="guideInitialResolutionRow">
+                          <item><widget class="QLabel" name="guideInitialResolutionLabel"><property name="text"><string>输入内参对应分辨率</string></property></widget></item>
+                          <item><widget class="QSpinBox" name="guide_initial_width_spin"><property name="enabled"><bool>false</bool></property><property name="minimum"><number>1</number></property><property name="maximum"><number>32768</number></property><property name="value"><number>1280</number></property></widget></item>
+                          <item><widget class="QLabel" name="guideInitialResolutionTimes"><property name="text"><string>×</string></property></widget></item>
+                          <item><widget class="QSpinBox" name="guide_initial_height_spin"><property name="enabled"><bool>false</bool></property><property name="minimum"><number>1</number></property><property name="maximum"><number>32768</number></property><property name="value"><number>720</number></property></widget></item>
+                          <item><spacer name="guideInitialResolutionSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                        </layout>
+                      </item>
+                      <item>
+                        <widget class="QWidget" name="manual_initial_widget" native="true">
+                          <layout class="QGridLayout" name="manualInitialGrid">
+                            <property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property>
+                            <item row="0" column="0"><widget class="QLabel" name="initial_fx_label"><property name="text"><string>fx</string></property></widget></item>
+                            <item row="0" column="1"><widget class="QDoubleSpinBox" name="initial_fx_spin"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.0</double></property><property name="maximum"><double>1000000.0</double></property><property name="value"><double>0.0</double></property><property name="specialValueText"><string>请填写</string></property></widget></item>
+                            <item row="0" column="2"><widget class="QLabel" name="initial_fy_label"><property name="text"><string>fy</string></property></widget></item>
+                            <item row="0" column="3"><widget class="QDoubleSpinBox" name="initial_fy_spin"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.0</double></property><property name="maximum"><double>1000000.0</double></property><property name="value"><double>0.0</double></property><property name="specialValueText"><string>请填写</string></property></widget></item>
+                            <item row="0" column="4"><widget class="QLabel" name="initial_cx_label"><property name="text"><string>cx</string></property></widget></item>
+                            <item row="0" column="5"><widget class="QDoubleSpinBox" name="initial_cx_spin"><property name="decimals"><number>4</number></property><property name="minimum"><double>-1000000.0</double></property><property name="maximum"><double>1000000.0</double></property><property name="value"><double>640.0</double></property></widget></item>
+                            <item row="0" column="6"><widget class="QLabel" name="initial_cy_label"><property name="text"><string>cy</string></property></widget></item>
+                            <item row="0" column="7"><widget class="QDoubleSpinBox" name="initial_cy_spin"><property name="decimals"><number>4</number></property><property name="minimum"><double>-1000000.0</double></property><property name="maximum"><double>1000000.0</double></property><property name="value"><double>360.0</double></property></widget></item>
+                            <item row="1" column="0"><widget class="QLabel" name="initial_distortion_label_0"><property name="text"><string>k1</string></property></widget></item>
+                            <item row="1" column="1"><widget class="QDoubleSpinBox" name="initial_distortion_spin_0"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="1" column="2"><widget class="QLabel" name="initial_distortion_label_1"><property name="text"><string>k2</string></property></widget></item>
+                            <item row="1" column="3"><widget class="QDoubleSpinBox" name="initial_distortion_spin_1"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="1" column="4"><widget class="QLabel" name="initial_distortion_label_2"><property name="text"><string>k3</string></property></widget></item>
+                            <item row="1" column="5"><widget class="QDoubleSpinBox" name="initial_distortion_spin_2"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="1" column="6"><widget class="QLabel" name="initial_distortion_label_3"><property name="text"><string>k4</string></property></widget></item>
+                            <item row="1" column="7"><widget class="QDoubleSpinBox" name="initial_distortion_spin_3"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="2" column="0"><widget class="QLabel" name="initial_distortion_label_4"><property name="text"><string>k5</string></property></widget></item>
+                            <item row="2" column="1"><widget class="QDoubleSpinBox" name="initial_distortion_spin_4"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="2" column="2"><widget class="QLabel" name="initial_distortion_label_5"><property name="text"><string>k6</string></property></widget></item>
+                            <item row="2" column="3"><widget class="QDoubleSpinBox" name="initial_distortion_spin_5"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="2" column="4"><widget class="QLabel" name="initial_distortion_label_6"><property name="text"><string>k7</string></property></widget></item>
+                            <item row="2" column="5"><widget class="QDoubleSpinBox" name="initial_distortion_spin_6"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                            <item row="2" column="6"><widget class="QLabel" name="initial_distortion_label_7"><property name="text"><string>k8</string></property></widget></item>
+                            <item row="2" column="7"><widget class="QDoubleSpinBox" name="initial_distortion_spin_7"><property name="decimals"><number>7</number></property><property name="minimum"><double>-100.0</double></property><property name="maximum"><double>100.0</double></property><property name="singleStep"><double>0.001</double></property></widget></item>
+                          </layout>
+                        </widget>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+                <item>
+                  <widget class="QLabel" name="resolution_notice">
+                    <property name="styleSheet">
+                      <string notr="true">color:#ffc857;background:#292313;border:1px solid #69551c;border-radius:6px;padding:7px;</string>
+                    </property>
+                    <property name="text">
+                      <string>⚠ 标定参数与当前相机、信号和分辨率绑定。</string>
+                    </property>
+                    <property name="wordWrap">
+                      <bool>true</bool>
+                    </property>
+                  </widget>
+                </item>
+                <item>
+                  <layout class="QVBoxLayout" name="calibrationActions">
+                    <item>
+                      <layout class="QHBoxLayout" name="sampleActions">
+                        <item>
+                          <widget class="QPushButton" name="capture_button">
+                            <property name="text">
+                              <string>拍摄并识别特征点</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="guided_button">
+                            <property name="text">
+                              <string>自动标定 · 引导拍摄 18 张</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="select_image_button">
+                            <property name="toolTip">
+                              <string>选择与当前标定分辨率一致的本地图片，按拍摄流程识别并加入本次样本</string>
+                            </property>
+                            <property name="text">
+                              <string>批量选择图片标定</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="accept_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>识别正确，继续下一张</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="retake_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>重拍</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                    <item>
+                      <layout class="QHBoxLayout" name="resultActions">
+                        <item>
+                          <widget class="QPushButton" name="run_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>开始标定</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="delete_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="toolTip">
+                              <string>在右侧列表中用 Ctrl/Shift 多选，或按 Ctrl+A 全选，再一次删除</string>
+                            </property>
+                            <property name="text">
+                              <string>批量删除选中图片</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="supplement_button">
+                            <property name="visible">
+                              <bool>false</bool>
+                            </property>
+                            <property name="text">
+                              <string>补拍</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="global_error_button">
+                            <property name="enabled">
+                              <bool>false</bool>
+                            </property>
+                            <property name="visible">
+                              <bool>false</bool>
+                            </property>
+                            <property name="toolTip">
+                              <string>查看全局与单张矢量误差，以及标定板和相机的三维位姿</string>
+                            </property>
+                            <property name="text">
+                              <string>误差矢量 / 三维位姿</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <spacer name="actionsSpacer">
+                            <property name="orientation">
+                              <enum>Qt::Horizontal</enum>
+                            </property>
+                            <property name="sizeHint" stdset="0">
+                              <size>
+                                <width>40</width>
+                                <height>20</height>
+                              </size>
+                            </property>
+                          </spacer>
+                        </item>
+                      </layout>
+                    </item>
+                  </layout>
+                </item>
+                <item>
+                  <widget class="QSplitter" name="work_log_splitter">
+                    <property name="orientation">
+                      <enum>Qt::Vertical</enum>
+                    </property>
+                    <property name="childrenCollapsible">
+                      <bool>false</bool>
+                    </property>
+                    <widget class="QSplitter" name="content_splitter">
+                      <property name="orientation">
+                        <enum>Qt::Horizontal</enum>
+                      </property>
+                      <widget class="QSplitter" name="image_splitter">
+                        <property name="orientation">
+                          <enum>Qt::Horizontal</enum>
+                        </property>
+                        <property name="childrenCollapsible">
+                          <bool>false</bool>
+                        </property>
+                        <widget class="danmucamera::ImageLabel" name="left_view">
+                          <property name="placeholder" stdset="0">
+                            <string>实时画面 / 选中图片</string>
+                          </property>
+                        </widget>
+                        <widget class="danmucamera::ImageLabel" name="right_view">
+                          <property name="placeholder" stdset="0">
+                            <string>特征点识别结果</string>
+                          </property>
+                        </widget>
+                      </widget>
+                      <widget class="QListWidget" name="sample_list">
+                        <property name="minimumSize">
+                          <size>
+                            <width>245</width>
+                            <height>0</height>
+                          </size>
+                        </property>
+                        <property name="toolTip">
+                          <string>Ctrl/Shift 多选，Ctrl+A 全选，可批量删除</string>
+                        </property>
+                        <property name="selectionMode">
+                          <enum>QAbstractItemView::ExtendedSelection</enum>
+                        </property>
+                      </widget>
+                    </widget>
+                    <widget class="QTextEdit" name="log_view">
+                      <property name="minimumSize">
+                        <size>
+                          <width>0</width>
+                          <height>70</height>
+                        </size>
+                      </property>
+                      <property name="readOnly">
+                        <bool>true</bool>
+                      </property>
+                    </widget>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+          </widget>
+        </item>
+      </layout>
+    </widget>
+  </widget>
+  <customwidgets>
+    <customwidget>
+      <class>danmucamera::ImageLabel</class>
+      <extends>QLabel</extends>
+      <header>image_label.hpp</header>
+    </customwidget>
+  </customwidgets>
+  <resources />
+  <connections />
+</ui>

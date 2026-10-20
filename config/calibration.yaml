@@ -1,0 +1,153 @@
+calibration_camera:
+  ros__parameters:
+    # "auto" 会沿用原程序的 V4L2 自动发现逻辑，也可指定 /dev/videoN。
+    device: auto
+    # 网络 ROS 2 图像输入：name 可填任意长度的完整话题名，例如
+    # /robot/arm/front_camera/color/image_raw；以 `ros2 topic list` 的实际输出为准。
+    # 留空时不显示 ROS Topic 设备；填好后在界面刷新设备并选择 [ROS-TOPIC]。
+    topic_input:
+      name: ""
+      # type 是 ROS 消息格式，不是话题名。auto 自动识别 Image/CompressedImage；
+      # 也可写 raw（Image）或 compressed（CompressedImage）。
+      type: auto
+    # 左右红外流默认关闭主动红外投射器，得到无散斑叠加的纯灰度图。
+    disable_ir_emitter: true
+    width: 1280
+    height: 720
+    fps: 30.0
+    # UI 预览无需和采集同频；15 FPS 能显著降低图像拷贝和缩放压力。
+    preview_fps: 15.0
+    preview_width: 1280
+    jpeg_quality: 90
+    output_directory: samples
+
+calibration_algorithm_bridge:
+  ros__parameters:
+    # sample_paths 不写在静态配置中；UI 每次运行前只传右侧本次会话列表。
+    # 空字符串表示自动寻找同一 ROS 包内的 calibration_solver 可执行文件。
+    algorithm_executable: ""
+    # 每次标定的求解结果及误差文件保存到 result_directory；完整检测报告保存到 report_directory。
+    result_directory: result/calibration
+    report_directory: result
+    board_width: 7
+    board_height: 6
+    square_size: 0.06
+    # UI 会在拍摄/导图/求解前更新这些参数；此处是启动默认值。
+    board_type: chessboard
+    marker_length: 0.04
+    dictionary_id: 0
+    camera_model: pinhole
+    distortion_model: brown5
+    automatic_initial: true
+    initial_fx: 0.0
+    initial_fy: 0.0
+    initial_cx: 0.0
+    initial_cy: 0.0
+    initial_distortion: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # 图像质量报警参数：bridge 只读取并交给独立算法类，不在 C++ 中写死阈值。
+    quality:
+      # 分析前等比例缩小到不超过该尺寸，降低分辨率对拉普拉斯方差的影响。
+      analysis_max_width: 640
+      analysis_max_height: 480
+
+      # 优先使用标定板特征点凸包作为 ROI。margin_ratio 表示每一侧的扩展比例；
+      # 0.20 相当于整体线性尺度约扩大到 1.40，用于覆盖内角点之外的实际板面。
+      roi_margin_ratio: 0.20
+      roi_min_points: 4
+      roi_min_pixels: 800
+
+      # 标定板在整幅图像中的面积比例（0~1）；超出区间的样本不能参与标定。
+      # 用角点凸包外扩估计板面占比。
+      # 低于下限提示离相机太远，高于上限提示太近。
+      min_board_area_ratio: 0.15
+      max_board_area_ratio: 0.70
+
+      # 清晰度：拉普拉斯方差低于此值触发模糊报警。
+      min_laplacian_variance: 300.0
+
+      # 暗部/亮部占比独立判断，与平均灰度并列；用户仍可结合直方图确认。
+      max_dark_ratio: 0.60
+      max_bright_ratio: 0.6
+
+      # 近黑(0~3) / 近白(252~255)代表动态范围端点裁剪。
+      # 这两项超过阈值时可直接触发质量告警，不再要求平均灰度同时异常。
+      max_black_clip_ratio: 0.05
+      max_white_clip_ratio: 0.05
+
+      # 极端平均灰度可以直接报警。
+      min_mean_gray: 45.0
+      max_mean_gray: 210.0
+
+calibration_ui:
+  ros__parameters:
+    # 九宫格角点数 / 当前总角点数；只给拍摄人员提示，不阻止标定。
+    # 低于下限提示补拍该方位，高于上限提示该方位过于集中。
+    corner_coverage:
+      min_ratio: 0.05
+      max_ratio: 0.25
+
+# 自动引导拍摄暂时停用；以下配置保留供以后恢复。
+# calibration_ui:
+#   ros__parameters:
+#     # 自动标定绿色引导框：修改后重启程序生效。
+#     guide:
+#       # 每一列数组都必须恰好 18 个值，按第 1~18 张的顺序一一对应。
+#       # OpenCV 相机光学坐标：X 向右、Y 向下、Z 向前，原点为相机光心。
+#       # 板面局部坐标：中心为原点，X 向右、Y 向下、法线 Z 向前；初始与像平面平行。
+#       # 固定相机轴依次转 X、Y、Z（度），每一步作用于上一步板面：R = Rz * Ry * Rx。
+#       # center_x/y 为期望投影中心；若四角越界，目标框会最小平移进画面。
+#       # area_ratio 为四角投影面积/画面面积，平移不会改变面积。
+#       # 每行 18 个值，依次对应 18 张；位置按本文件 center_x/y 实际值决定。
+#       # 正 roll_x：板下边远离相机，上边投影相对更宽。
+#       # 正 pitch_y：板右边靠近相机，右边投影相对更长。
+#       # 正 yaw_z：从相机看画面顺时针旋转。
+#       # 三轴同时设置时按 Rz * Ry * Rx 组合；调整后重启程序。
+#       center_x: [0.20, 0.50, 0.80, 0.80, 0.50, 0.20, 0.20, 0.50, 0.80,
+#                  0.22, 0.78, 0.22, 0.78, 0.50, 0.22, 0.78, 0.50, 0.50]
+#       center_y: [0.25, 0.25, 0.25, 0.5, 0.5, 0.50, 0.7, 0.77, 0.77,
+#                  0.7, 0.7, 0.70, 0.70, 0.26, 0.50, 0.50, 0.74, 0.50]
+#       roll_x_deg: [-0.0, -0.0, -0.0, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0,
+#                    -20.0, -20.0, 20.0, 20.0, -20.0, 0.0, 0.0, 20.0, 0.0]
+#       pitch_y_deg: [-0.0, 0.0, 0.0, 0.0, 0.0, -30.0, -30.0, 0.0, 30.0,
+#                     20.0, -20.0, 20.0, -20.0, 0.0, 20.0, -20.0, 0.0, 0.0]
+#       yaw_z_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+#                   -20.0, 20.0, 20.0, -20.0, -10.0, -20.0, 20.0, 10.0, 0.0]
+#       max_orientation_error_deg: 5.0
+#       # 首次标定无需相机内参：以画面四角的透视形状匹配目标框；鱼眼同样适用。
+#       # 此模式先在画面中心按相机 X/Y/Z 轴形成透视形状，再整体移到目标位置。
+#       # XYZ 是目标形状模板，不是测得的真实空间欧拉角。
+#       # 四角平均偏差 / 目标对角线需小于此比例，并同时满足覆盖率与质量条件。
+#       max_shape_corner_error_ratio: 0.12
+#       # 无内参时的绘图透视强度。数值越大，X/Y 倾斜越明显；不代表真实视场角。
+#       visual_perspective_strength: 1.5
+#       # 如已知内参，可选填真实 K 和畸变，启用精确 PnP 三维姿态检查。
+#       # camera_width/height 为选填 K 的分辨率；两者为 0 时按当前视频分辨率解释 K。
+#       # camera_matrix: [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+#       # distortion: [k1, k2, p1, p2, k3]  # 鱼眼模型使用 4 个系数
+#       camera_width: 0
+#       camera_height: 0
+#       # 每个值独立控制对应一张绿框的面积；板面长宽比仍由标定板尺寸决定。
+#       # 前九张偏远、后九张偏近；可逐个调整，不要求各张大小相同。
+#       area_ratio: [0.2, 0.2, 0.2, 0.2, 0.13, 0.11, 0.12, 0.11, 0.14,
+#                    0.14, 0.13, 0.15, 0.14, 0.15, 0.13, 0.16, 0.15, 0.14]
+#
+#       # 判定阈值，与上面的绿框面积 area_ratio 分开：
+#       # 必须同时满足：标定板真实四角投影区域覆盖绿框至少 60%，
+#       # 标定板投影面积占整幅画面至少 10%。前者防止没有放进框里，
+#       # 后者防止框/标定板都很小时，虽然框覆盖 100% 仍然拍摄。
+#       min_guide_coverage_ratio: 0.60
+#       min_board_frame_ratio: 0.10
+#       # 特征点外接区域允许越出绿框边缘的归一化余量。
+#       inside_margin_ratio: 0.04
+#       # 板四角必须仍在实际画面内；与引导框的允许偏差分开设置。
+#       frame_edge_margin_ratio: 0.005
+#
+#       # 荧光框外观，可按个人偏好调整颜色、线宽和圆角（单位：显示像素）。
+#       guide_color: "#40ff95"
+#       ready_color: "#69ff89"
+#       detected_color: "#ffca4b"
+#       guide_line_width: 4
+#       ready_line_width: 5
+#       detected_line_width: 2
+#       corner_radius_px: 13.0

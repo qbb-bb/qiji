@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GuidedCaptureDialog</class>
+ <widget class="QDialog" name="GuidedCaptureDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>1280</width><height>760</height></rect></property>
+  <property name="minimumSize"><size><width>800</width><height>560</height></size></property>
+  <property name="windowTitle"><string>自动标定 · 引导拍摄</string></property>
+  <property name="styleSheet">
+   <string notr="true">QDialog{background:#171c26;color:#e8edf7;}
+danmucamera--ImageLabel#guide_live_view{background:#0e131b;border:1px solid #2c3545;border-radius:8px;color:#8c98ad;}
+QFrame#guide_top_panel{background:#202b30;border:1px solid #34443d;border-radius:8px;}
+QLabel#guide_status_label{color:#c8f9d8;background:transparent;padding:5px;}
+QPushButton#stop_guide_button{min-height:38px;padding:0 16px;background:#354258;color:#e0e9f7;border:0;border-radius:7px;font-weight:600;}
+QPushButton#stop_guide_button:hover{background:#44536e;}</string>
+  </property>
+  <property name="modal"><bool>false</bool></property>
+  <layout class="QVBoxLayout" name="guide_root_layout">
+   <property name="spacing"><number>10</number></property>
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>10</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+   <item>
+    <widget class="QFrame" name="guide_top_panel">
+     <property name="minimumSize"><size><width>0</width><height>105</height></size></property>
+     <property name="maximumSize"><size><width>16777215</width><height>160</height></size></property>
+     <layout class="QVBoxLayout" name="guide_top_layout">
+      <property name="leftMargin"><number>8</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>8</number></property>
+      <property name="bottomMargin"><number>6</number></property>
+      <item><widget class="QLabel" name="guide_panel_title"><property name="text"><string>拍摄引导</string></property><property name="styleSheet"><string notr="true">font-size:17px;font-weight:700;color:#e1ffea;</string></property></widget></item>
+      <item>
+       <widget class="QScrollArea" name="guide_status_scroll">
+        <property name="widgetResizable"><bool>true</bool></property>
+        <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+        <widget class="QWidget" name="guide_status_container">
+         <layout class="QVBoxLayout" name="guide_status_layout">
+          <property name="leftMargin"><number>0</number></property>
+          <property name="topMargin"><number>0</number></property>
+          <property name="rightMargin"><number>0</number></property>
+          <property name="bottomMargin"><number>0</number></property>
+          <item><widget class="QLabel" name="guide_status_label"><property name="text"><string>等待引导拍摄…</string></property><property name="wordWrap"><bool>true</bool></property><property name="alignment"><set>Qt::AlignTop|Qt::AlignLeft</set></property></widget></item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="danmucamera::ImageLabel" name="guide_live_view">
+     <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>1</horstretch><verstretch>1</verstretch></sizepolicy></property>
+     <property name="minimumSize"><size><width>760</width><height>360</height></size></property>
+     <property name="text"><string>等待相机视频…</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="guide_button_layout">
+     <item><spacer name="guide_button_spacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QPushButton" name="stop_guide_button"><property name="text"><string>停止自动拍摄并关闭</string></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets><customwidget><class>danmucamera::ImageLabel</class><extends>QLabel</extends><header>image_label.hpp</header></customwidget></customwidgets>
+ <resources/>
+ <connections/>
+</ui>
