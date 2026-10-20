@@ -2,7 +2,10 @@
 # Ubuntu 22.04: install this project's system dependencies, build, and launch.
 set -eo pipefail
 
-package_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_path="${BASH_SOURCE[0]}"
+[[ "${script_path}" == */* ]] || script_path="$(command -v "${script_path}")"
+source "${script_path%/*}/clean_snap_env.sh"
+package_root="$(cd "${script_path%/*}/.." && pwd)"
 source /etc/os-release
 if [[ "${ID:-}" != ubuntu || "${VERSION_ID:-}" != 22.04 ]]; then
   echo "此脚本仅支持 Ubuntu 22.04；当前系统为 ${PRETTY_NAME:-unknown}。" >&2

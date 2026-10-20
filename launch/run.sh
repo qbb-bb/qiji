@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
-package_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_path="${BASH_SOURCE[0]}"
+[[ "${script_path}" == */* ]] || script_path="$(command -v "${script_path}")"
+source "${script_path%/*}/clean_snap_env.sh"
+package_root="$(cd "${script_path%/*}/.." && pwd)"
 if ! command -v ros2 >/dev/null 2>&1; then
   ros_setup="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
   if [[ ! -f "${ros_setup}" ]]; then

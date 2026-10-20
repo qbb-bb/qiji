@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set +u
 set -e
-package_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_path="${BASH_SOURCE[0]}"
+[[ "${script_path}" == */* ]] || script_path="$(command -v "${script_path}")"
+source "${script_path%/*}/clean_snap_env.sh"
+package_root="$(cd "${script_path%/*}/.." && pwd)"
 if ! command -v ros2 >/dev/null 2>&1; then
   ros_setup="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
   if [[ ! -f "${ros_setup}" ]]; then
@@ -11,12 +14,18 @@ if ! command -v ros2 >/dev/null 2>&1; then
   source "${ros_setup}"
 fi
 cd "${package_root}"
+# CMake can retain a Snap runtime path from a previous build in its cache.
+cache="${package_root}/build/danmucamera/CMakeCache.txt"
+ui_binary="${package_root}/build/danmucamera/calibration_ui"
+if { [[ -f "${cache}" ]] && grep -Fq '/snap/' "${cache}"; } || \
+   { [[ -f "${ui_binary}" ]] && command -v readelf >/dev/null 2>&1 && readelf -d "${ui_binary}" | grep -Fq '/snap/'; }; then
+  rm -rf -- "${package_root}/build/danmucamera"
+fi
 # Keep Conda packages out of the system ROS/OpenCV dependency graph.
 # PATH is also a CMake package search source, and an old cache can retain
 # Conda's fmt/spdlog even after the environment has been cleaned.
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   conda_prefix="${CONDA_PREFIX}"
-  cache="${package_root}/build/danmucamera/CMakeCache.txt"
   if [[ -f "${cache}" ]] && grep -Fq "${conda_prefix}/" "${cache}"; then
     rm -rf -- "${package_root}/build/danmucamera"
   fi
