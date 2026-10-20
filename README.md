@@ -4,14 +4,18 @@ Linux 上的 ROS 2 + Qt 6 + OpenCV 标定程序。相机采集支持 V4L2 彩色
 
 ## 迁移到另一台电脑
 
-只复制本目录的 `CMakeLists.txt`、`package.xml`、`src/`、`config/calibration.yaml`、`launch/` 和本 README。`build/`、`install/`、`log/` 是本机产物，不要复制；`samples/` 与 `result/calibration/` 是个人数据，按需备份。新电脑须重新标定新相机及其各个分辨率和成像器。
+编译故障、换机安装命令和逐步验收见 [换机编译与测试说明](docs/换机编译与测试说明.md)。
+
+Ubuntu 22.04 新电脑可在图形桌面终端运行 `./launch/setup_and_run.sh`，自动安装 Qt 6、ROS 2 Humble 和其他必要依赖，随后编译并启动。首次运行需要联网和 sudo 权限。
+
+只复制本目录的 `CMakeLists.txt`、`package.xml`、`src/`、`config/`、`launch/`、`docs/` 和本 README。`build/`、`install/`、`log/` 是本机产物，不要复制；`samples/` 与 `result/calibration/` 是个人数据，按需备份。新电脑须重新标定新相机及其各个分辨率和成像器。
 
 先安装 ROS 2（含 `ament_cmake`、`rclcpp`、`rcl_interfaces`、`sensor_msgs`、`std_msgs`、`std_srvs`、`launch_ros`）、`colcon`、C++17 编译器、Qt 6 Widgets、OpenCV（含 ArUco）和 `v4l-utils`。按相机厂商提供的说明安装 SDK、运行库和 USB/udev 权限规则。SDK 安装后重新插拔相机。普通 V4L2 相机无需厂商 SDK。
 
 CMake 通过系统搜索路径和 `CMAKE_PREFIX_PATH` 查找 SDK，不写死用户名或 ROS 安装目录。如 SDK 安装在自定义位置，先将其安装前缀加入 `CMAKE_PREFIX_PATH`。新厂商 SDK 仍需在 `src/bridge/io_node.cpp` 增加枚举、开流、取帧和释放的实现。
 
 ```bash
-cd /你的路径/danmu_camera
+cd /你的路径/qiji
 ./launch/build.sh
 ./launch/run.sh
 ```
