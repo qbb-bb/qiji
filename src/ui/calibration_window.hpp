@@ -108,6 +108,7 @@ private:
   QLineEdit * cloud_topic_edit_{nullptr};
   QLineEdit * topic_control_command_edit_{nullptr};
   QLineEdit * topic_control_status_edit_{nullptr};
+  QPushButton * apply_topic_inputs_button_{nullptr};
   QGroupBox * extrinsic_input_panel_{nullptr};
   QLabel * extrinsic_source_label_{nullptr};
   QLineEdit * extrinsic_camera_info_edit_{nullptr};
@@ -119,6 +120,7 @@ private:
   QStringList active_streams_;
   bool stream_reconfigure_pending_{false};
   bool stream_restart_pending_{false};
+  bool topic_inputs_dirty_{false};
   bool emitter_change_pending_{false};
   bool confirmed_emitter_disabled_{true};
   QComboBox * resolution_combo_;

@@ -34,7 +34,7 @@ cd /你的路径/qiji
 
 相机与雷达外参的 Topic 输入角色、CameraInfo、时间戳和坐标系约定见 [ROS 相机雷达外参输入接口](docs/ROS相机雷达外参输入接口.md)。该接口已在配置和界面中声明；外参求解仍处于规划阶段。
 
-在运行本程序的电脑上用 `ros2 topic list` 查看完整话题名，再用 `ros2 topic type /实际话题名` 确认格式。设备列表选择 `[ROS-TOPIC] ROS Camera` 后，在首页“图像话题”和“点云话题”输入完整名称（以 `/` 开头）。图像应为 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，点云应为 `sensor_msgs/msg/PointCloud2`。在“信息流”可单选一路或同时勾选 RGB 和 3D 点云；多选可在首页同时预览，进入内参标定前必须只勾选一条可标定流。点云视图支持拖动旋转、滚轮缩放。配置文件 `topic_input.name` 和 `topic_input.pointcloud_name` 只提供启动默认值；界面连接时会覆盖它们，无需每次修改 YAML。`topic_input.type: auto` 自动识别图像消息格式，也可指定 `raw` 或 `compressed`。点云需要小端 FLOAT32 的 x/y/z 字段；预览最多抽样约 12000 点。程序不会仅凭话题名称推断两路数据来自同一物理设备，填写成对的话题即表示用户指定它们为同一相机。当前不执行图像与点云的时间同步或投影配准。
+在运行本程序的电脑上用 `ros2 topic list` 查看完整话题名，再用 `ros2 topic type /实际话题名` 确认格式。设备列表选择 `[ROS-TOPIC] ROS Camera` 后，在首页“图像话题”和“点云话题”输入完整名称（以 `/` 开头）。图像应为 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，点云应为 `sensor_msgs/msg/PointCloud2`。在“信息流”可单选一路或同时勾选 RGB 和 3D 点云；多选可在首页同时预览，进入内参标定前必须只勾选一条可标定流。点云视图支持拖动旋转、滚轮缩放。配置文件 `topic_input.name` 和 `topic_input.pointcloud_name` 只提供启动默认值；界面连接时会覆盖它们，无需每次修改 YAML。连接后仍可修改图像、点云和可选的驱动控制话题，点击“应用话题”即可更新当前连接；若正在采流，程序会先停流、更新参数，再重新启动。`topic_input.type: auto` 自动识别图像消息格式，也可指定 `raw` 或 `compressed`。点云需要小端 FLOAT32 的 x/y/z 字段；预览最多抽样约 12000 点。程序不会仅凭话题名称推断两路数据来自同一物理设备，填写成对的话题即表示用户指定它们为同一相机。当前不执行图像与点云的时间同步或投影配准。
 
 图像和点云可只填写一路，也可填写两路而其中一路暂时不可用；至少一路必须可发现并收到数据。远端发布端须在启动采流前可被 ROS 2 发现。若 5 秒内没有收到图像或点云，程序会提示启动失败；采流期间连续 3 秒都无数据会断开。检查两端的 `ROS_DOMAIN_ID`、网络发现及 `ros2 topic info -v /实际话题名` 中的 QoS。此输入使用传感器数据 QoS。原始图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8`、`mono16` 和相应的 `8UC1`、`16UC1`；16 位单通道图像会转成 8 位供标定。收到的实际分辨率会作为当前标定分辨率，不按界面预设值缩放原图。
 
