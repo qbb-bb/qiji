@@ -801,7 +801,7 @@ void CalibrationRosClient::stopGuidedDetection()
 }
 
 void CalibrationRosClient::importForCalibration(
-  const QString & path, const CalibrationSettings & settings)
+  const QString & path, const CalibrationSettings & settings, const QSize & image_size)
 {
   const auto fail = [this, path](const QString & reason) {
       impl_->dispatch([this, path, reason]() {
@@ -813,7 +813,7 @@ void CalibrationRosClient::importForCalibration(
     return;
   }
   impl_->algorithm_parameter_client_->set_parameters(settingsParameters(settings),
-    [this, path, fail](
+    [this, path, image_size, fail](
       std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
       try {
         for (const auto & result : future.get()) {
@@ -828,7 +828,10 @@ void CalibrationRosClient::importForCalibration(
         return;
       }
       std_msgs::msg::String message;
-      message.data = path.toStdString();
+      // The I/O node may still hold its startup resolution when importing
+      // without starting the camera. Send the resolution shown by the UI.
+      message.data = "v2\t" + std::to_string(image_size.width()) + "\t" +
+        std::to_string(image_size.height()) + "\t" + path.toStdString();
       impl_->import_image_pub_->publish(message);
     });
 }

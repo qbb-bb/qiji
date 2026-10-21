@@ -156,7 +156,7 @@ public:
   void startGuidedDetection(const CalibrationSettings & settings);
   void stopGuidedDetection();
   void importForCalibration(
-    const QString & path, const CalibrationSettings & settings);
+    const QString & path, const CalibrationSettings & settings, const QSize & image_size);
   void saveFrame(const QString & batch_source = {});
   void runCalibration();
   void runCalibration(

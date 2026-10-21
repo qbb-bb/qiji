@@ -1942,7 +1942,8 @@ void CalibrationWindow::processNextBatchImage()
   calibration_status_->setText(QStringLiteral("批量处理中 %1/%2：%3")
     .arg(batch_processed_ + 1).arg(batch_total_)
     .arg(QFileInfo(batch_current_source_).fileName()));
-  transport_.importForCalibration(batch_current_source_, currentSettings());
+  transport_.importForCalibration(
+    batch_current_source_, currentSettings(), QSize(active_width_, active_height_));
 }
 
 void CalibrationWindow::maybeSaveCurrentBatchImage()

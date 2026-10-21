@@ -1290,8 +1290,36 @@ private:
     publisher->publish(std::move(message));
   }
 
-  void importImage(const std::string & path)
+  void importImage(const std::string & request)
   {
+    // v2: "v2\t<width>\t<height>\t<path>". A plain path remains supported
+    // for older clients. The selected calibration size is independent of
+    // whether the camera has ever been started.
+    std::string path = request;
+    int expected_width = width_;
+    int expected_height = height_;
+    if (request.rfind("v2\t", 0) == 0) {
+      const size_t width_end = request.find('\t', 3);
+      const size_t height_end = width_end == std::string::npos ?
+        std::string::npos : request.find('\t', width_end + 1);
+      if (height_end == std::string::npos) {
+        publishEvent("选图失败：导入请求缺少分辨率或路径");
+        return;
+      }
+      path = request.substr(height_end + 1);
+      try {
+        expected_width = std::stoi(request.substr(3, width_end - 3));
+        expected_height = std::stoi(request.substr(width_end + 1,
+          height_end - width_end - 1));
+      } catch (const std::exception &) {
+        publishImportStatus("failed", path, "标定分辨率无效");
+        return;
+      }
+      if (expected_width <= 0 || expected_height <= 0 || path.empty()) {
+        publishImportStatus("failed", path, "标定分辨率或图片路径无效");
+        return;
+      }
+    }
     const cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
     if (image.empty()) {
       const std::string reason = "无法读取图片";
@@ -1299,10 +1327,10 @@ private:
       publishImportStatus("failed", path, reason);
       return;
     }
-    if (image.cols != width_ || image.rows != height_) {
+    if (image.cols != expected_width || image.rows != expected_height) {
       const std::string reason = "图片分辨率 " + std::to_string(image.cols) + "x" +
-        std::to_string(image.rows) + " 与当前标定分辨率 " + std::to_string(width_) + "x" +
-        std::to_string(height_) + " 不一致";
+        std::to_string(image.rows) + " 与当前标定分辨率 " +
+        std::to_string(expected_width) + "x" + std::to_string(expected_height) + " 不一致";
       publishEvent("选图失败：" + reason);
       publishImportStatus("failed", path, reason);
       return;
