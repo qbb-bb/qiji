@@ -6,6 +6,7 @@ namespace danmucamera::contract
 {
 inline constexpr char kImageTopic[] = "/calibration/camera/image/compressed";
 inline constexpr char kStreamImageTopic[] = "/calibration/camera/streams/compressed";
+inline constexpr char kStreamCloudTopic[] = "/calibration/camera/streams/points";
 inline constexpr char kCapturedImageTopic[] = "/calibration/camera/captured/compressed";
 inline constexpr char kCameraEventTopic[] = "/calibration/camera/event";
 inline constexpr char kCameraStateTopic[] = "/calibration/camera/state";

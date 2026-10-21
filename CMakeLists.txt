@@ -81,6 +81,7 @@ add_executable(calibration_ui
   src/ui/result_visualization.hpp
   src/bridge/calibration_ros_client.cpp
   src/ui/image_label.cpp
+  src/ui/point_cloud_view.cpp
   src/ui/image_quality_panel.cpp
   src/ui/guided_capture_plan.cpp
   src/ui/guided_capture_ui.cpp

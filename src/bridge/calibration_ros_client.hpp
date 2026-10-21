@@ -7,6 +7,7 @@
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <QVector3D>
 
 #include <array>
 #include <functional>
@@ -136,9 +137,11 @@ public:
 
   bool spinSome();
   void refreshDevices();
+  void refreshTopicInputs();
   void connectCamera(
     const QString & device_id, int width, int height, bool disable_ir_emitter,
-    const QStringList & stream_names = {});
+    const QStringList & stream_names = {}, const QString & image_topic = {},
+    const QString & cloud_topic = {});
   void startCamera();
   void stopCamera();
   void setIrEmitterDisabled(bool disabled);
@@ -162,6 +165,7 @@ public:
 
   std::function<void(const QImage &)> onFrame;
   std::function<void(const QString &, const QImage &)> onStreamFrame;
+  std::function<void(const std::vector<QVector3D> &)> onStreamCloud;
   std::function<void(const QImage &)> onCapturedFrame;
   std::function<void(const QImage &)> onCornerPreview;
   std::function<void(const GuideDetection &)> onGuideDetection;
@@ -178,6 +182,7 @@ public:
   std::function<void(const QString &)> onStatus;
   std::function<void(const QString &)> onResult;
   std::function<void(const std::vector<UiCameraDevice> &)> onDevices;
+  std::function<void(const QString &, const QString &)> onTopicDefaults;
   std::function<void(bool, const QString &)> onStreamingChanged;
   std::function<void(bool, const QString &)> onIrEmitterChanged;
   std::function<void(bool, const QString &)> onConnectionChanged;

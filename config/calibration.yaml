@@ -2,14 +2,16 @@ calibration_camera:
   ros__parameters:
     # "auto" 会沿用原程序的 V4L2 自动发现逻辑，也可指定 /dev/videoN。
     device: auto
-    # 网络 ROS 2 图像输入：name 可填任意长度的完整话题名，例如
-    # /robot/arm/front_camera/color/image_raw；以 `ros2 topic list` 的实际输出为准。
-    # 留空时不显示 ROS Topic 设备；填好后在界面刷新设备并选择 [ROS-TOPIC]。
+    # ROS 2 图像输入的启动默认话题；也可直接在界面填写，无需改本文件。
+    # 使用 `ros2 topic list` 中的完整名称，例如 /camera/color/image_raw。
     topic_input:
       name: ""
       # type 是 ROS 消息格式，不是话题名。auto 自动识别 Image/CompressedImage；
       # 也可写 raw（Image）或 compressed（CompressedImage）。
       type: auto
+      # 同一 ROS 相机的 PointCloud2 启动默认话题。留空时可在界面填写。
+      # “信息流”可单选或同时勾选 RGB 和点云；点云可旋转、缩放。
+      pointcloud_name: ""
     # 左右红外流默认关闭主动红外投射器，得到无散斑叠加的纯灰度图。
     disable_ir_emitter: true
     width: 1280

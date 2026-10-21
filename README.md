@@ -32,7 +32,7 @@ cd /你的路径/qiji
 
 ## 从网络 ROS 2 图像话题采集
 
-在运行本程序的电脑上先用 `ros2 topic list` 确认能看到远端图像话题，再用 `ros2 topic type /实际话题名` 确认类型。在 `config/calibration.yaml` 的 `calibration_camera.ros__parameters.topic_input.name` 填入完整话题名，例如 `/remote_camera/image_raw`。`type: auto` 会在启动采流时识别 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`；也可明确填写 `raw` 或 `compressed`。修改配置后重启程序，在设备列表选择 `[ROS-TOPIC]`，点击连接、启动相机，即可照常预览、拍摄和保存。不需要修改代码中的内部预览话题名。
+在运行本程序的电脑上用 `ros2 topic list` 查看完整话题名，再用 `ros2 topic type /实际话题名` 确认格式。设备列表选择 `[ROS-TOPIC] ROS Camera` 后，在首页“图像话题”和“点云话题”输入完整名称（以 `/` 开头）。图像应为 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，点云应为 `sensor_msgs/msg/PointCloud2`。在“信息流”可单选一路或同时勾选 RGB 和 3D 点云；多选可在首页同时预览，进入内参标定前必须只勾选一条可标定流。点云视图支持拖动旋转、滚轮缩放。配置文件 `topic_input.name` 和 `topic_input.pointcloud_name` 只提供启动默认值；界面连接时会覆盖它们，无需每次修改 YAML。`topic_input.type: auto` 自动识别图像消息格式，也可指定 `raw` 或 `compressed`。点云需要小端 FLOAT32 的 x/y/z 字段；预览最多抽样约 12000 点。程序不会仅凭话题名称推断两路数据来自同一物理设备，填写成对的话题即表示用户指定它们为同一相机。当前不执行图像与点云的时间同步或投影配准。
 
 远端发布端须在启动采流前可被 ROS 2 发现。若 5 秒内没有收到首帧，程序会提示连接失败；采流期间连续 3 秒无帧会断开。检查两端的 `ROS_DOMAIN_ID`、网络发现及 `ros2 topic info -v /实际话题名` 中的 QoS。此输入使用传感器数据 QoS。原始图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8`、`mono16` 和相应的 `8UC1`、`16UC1`；16 位单通道图像会转成 8 位供标定。收到的实际分辨率会作为当前标定分辨率，不按界面预设值缩放原图。
 

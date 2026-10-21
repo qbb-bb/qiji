@@ -3,6 +3,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -21,6 +23,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -82,6 +86,7 @@ public:
     declare_parameter<std::string>("device", "auto");
     declare_parameter<std::string>("topic_input.name", "");
     declare_parameter<std::string>("topic_input.type", "auto");
+    declare_parameter<std::string>("topic_input.pointcloud_name", "");
     topic_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     declare_parameter<bool>("disable_ir_emitter", true);
     declare_parameter<std::vector<std::string>>("signals", std::vector<std::string>{"rgb"});
@@ -98,6 +103,8 @@ public:
       contract::kImageTopic, rclcpp::SensorDataQoS().keep_last(1));
     stream_image_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       contract::kStreamImageTopic, rclcpp::SensorDataQoS().keep_last(4));
+    stream_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+      contract::kStreamCloudTopic, rclcpp::SensorDataQoS().keep_last(1));
     captured_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       contract::kCapturedImageTopic, rclcpp::QoS(1).reliable());
     viewed_original_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
@@ -245,9 +252,10 @@ private:
         "v4l2", "rgb"});
     }
     const auto topic = get_parameter("topic_input.name").as_string();
-    if (!topic.empty()) {
-      result.push_back({"ros-topic:configured:rgb", "ROS Topic: " + topic, "ros-topic", "rgb"});
-    }
+    const auto cloud_topic = get_parameter("topic_input.pointcloud_name").as_string();
+    const std::string name = "ROS Camera";
+    result.push_back({"ros-topic:configured:rgb", name, "ros-topic", "rgb"});
+    result.push_back({"ros-topic:configured:depth", name, "ros-topic", "depth"});
     return result;
   }
 
@@ -299,7 +307,11 @@ private:
     signals_ = get_parameter("signals").as_string_array();
     if (signals_.empty()) {signals_.push_back(selection_.signal);}
     if (selection_.backend == "v4l2") {signals_ = {"rgb"};}
-    if (selection_.backend == "ros-topic") {signals_ = {"rgb"};}
+    if (selection_.backend == "ros-topic") {
+      signals_.erase(std::remove_if(signals_.begin(), signals_.end(),
+        [](const std::string & signal) {return signal != "rgb" && signal != "depth";}),
+        signals_.end());
+    }
     if (std::find(signals_.begin(), signals_.end(), selection_.signal) == signals_.end()) {
       signals_.insert(signals_.begin(), selection_.signal);
     }
@@ -321,9 +333,10 @@ private:
       std::unique_lock<std::mutex> lock(frame_mutex_);
       const bool received_frame = frame_cv_.wait_for(lock, 5s,
         [this, initial_sequence]() {
-          return !streaming_ ||
-            (frame_sequence_ > initial_sequence && !latest_frame_.empty());
-        }) && streaming_ && !latest_frame_.empty();
+          return !streaming_ || (frame_sequence_ > initial_sequence &&
+            (selection_.signal == "depth" ? !latest_cloud_.empty() : !latest_frame_.empty()));
+        }) && streaming_ &&
+        (selection_.signal == "depth" ? !latest_cloud_.empty() : !latest_frame_.empty());
       if (!received_frame) {
         lock.unlock();
         streaming_ = false;
@@ -334,15 +347,18 @@ private:
         });
         response.success = false;
         response.message = selection_.backend == "ros-topic" ?
-          "5 秒内未收到 ROS 图像；请检查话题名、网络发现、QoS 和发布端" :
+          "5 秒内未收到 ROS 主信息流；请检查话题名、网络发现、QoS 和发布端" :
           "相机未收到有效画面或设备已断开；请检查流格式、分辨率和 USB 连接";
         publishEvent(response.message);
         return;
       }
     }
     response.success = true;
-    response.message = "相机已启动: " + selection_.backend + "/" + selection_.signal +
-      "，实际分辨率 " + std::to_string(width_) + "x" + std::to_string(height_);
+    response.message = "相机已启动: " + selection_.backend + "/" + selection_.signal;
+    if (selection_.signal != "depth") {
+      response.message += "，实际分辨率 " + std::to_string(width_) + "x" +
+        std::to_string(height_);
+    }
     if (isInfraredSignal() && disable_ir_emitter_) {
       response.message += "，红外投射器已关闭（纯灰度）";
     }
@@ -446,18 +462,37 @@ private:
     try {
       if (selection_.backend == "ros-topic") {
         const auto topic = get_parameter("topic_input.name").as_string();
+        const auto cloud_topic = get_parameter("topic_input.pointcloud_name").as_string();
         auto type = get_parameter("topic_input.type").as_string();
-        if (topic.empty() || topic.front() != '/') {
+        const bool use_image = std::find(signals_.begin(), signals_.end(), "rgb") != signals_.end();
+        const bool use_cloud = std::find(signals_.begin(), signals_.end(), "depth") != signals_.end();
+        if (use_image && (topic.empty() || topic.front() != '/')) {
           error = "topic_input.name 必须填写以 / 开头的 ROS 图像话题名";
           return false;
         }
-        if (topic == contract::kImageTopic || topic == contract::kStreamImageTopic ||
-          topic == contract::kCapturedImageTopic)
-        {
+        if (use_cloud && (cloud_topic.empty() || cloud_topic.front() != '/')) {
+          error = "topic_input.pointcloud_name 必须填写以 / 开头的 PointCloud2 话题名";
+          return false;
+        }
+        if (use_image && (topic == contract::kImageTopic ||
+          topic == contract::kStreamImageTopic || topic == contract::kCapturedImageTopic)) {
           error = "输入话题不能是本程序发布的图像话题，否则会循环接收";
           return false;
         }
-        if (type == "auto") {
+        if (use_cloud) {
+          if (cloud_topic == contract::kStreamCloudTopic) {
+            error = "点云输入不能是本程序发布的点云话题";
+            return false;
+          }
+          const auto topics = get_topic_names_and_types();
+          const auto found = topics.find(cloud_topic);
+          if (found == topics.end() || std::find(found->second.begin(), found->second.end(),
+            "sensor_msgs/msg/PointCloud2") == found->second.end()) {
+            error = "尚未发现 PointCloud2 话题 " + cloud_topic;
+            return false;
+          }
+        }
+        if (use_image && type == "auto") {
           const auto topics = get_topic_names_and_types();
           const auto found = topics.find(topic);
           if (found == topics.end()) {
@@ -477,7 +512,7 @@ private:
             return false;
           }
         }
-        if (type != "raw" && type != "compressed") {
+        if (use_image && type != "raw" && type != "compressed") {
           error = "topic_input.type 只能是 auto、raw 或 compressed";
           return false;
         }
@@ -485,12 +520,13 @@ private:
           std::lock_guard<std::mutex> lock(frame_mutex_);
           latest_frame_.release();
           latest_stream_frames_.clear();
+          latest_cloud_.clear();
           topic_last_frame_time_ = {};
         }
         rclcpp::SubscriptionOptions options;
         options.callback_group = topic_callback_group_;
         const auto qos = rclcpp::SensorDataQoS().keep_last(1);
-        if (type == "compressed") {
+        if (use_image && type == "compressed") {
           topic_compressed_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
             topic, qos,
             [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
@@ -498,11 +534,18 @@ private:
                 const_cast<uint8_t *>(message->data.data()));
               receiveTopicFrame(cv::imdecode(encoded, cv::IMREAD_UNCHANGED));
             }, options);
-        } else {
+        } else if (use_image) {
           topic_raw_sub_ = create_subscription<sensor_msgs::msg::Image>(
             topic, qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
               receiveRawTopicFrame(*message);
+            }, options);
+        }
+        if (use_cloud) {
+          topic_cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+            cloud_topic, qos,
+            [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr message) {
+              receiveTopicCloud(*message);
             }, options);
         }
         topic_input_active_ = true;
@@ -717,6 +760,54 @@ private:
     receiveTopicFrame(frame);
   }
 
+  void receiveTopicCloud(const sensor_msgs::msg::PointCloud2 & message)
+  {
+    if (!topic_input_active_ || !streaming_ ||
+      std::find(signals_.begin(), signals_.end(), "depth") == signals_.end()) {return;}
+    int offsets[3] = {-1, -1, -1};
+    for (const auto & field : message.fields) {
+      const int index = field.name == "x" ? 0 : field.name == "y" ? 1 :
+        field.name == "z" ? 2 : -1;
+      if (index >= 0 && field.datatype == sensor_msgs::msg::PointField::FLOAT32 &&
+        field.count == 1 && field.offset + sizeof(float) <= message.point_step) {
+        offsets[index] = static_cast<int>(field.offset);
+      }
+    }
+    if (offsets[0] < 0 || offsets[1] < 0 || offsets[2] < 0 || message.is_bigendian ||
+      message.point_step == 0 || message.width == 0 || message.height == 0 ||
+      message.row_step < message.width * message.point_step ||
+      message.data.size() < static_cast<size_t>(message.height) * message.row_step) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "PointCloud2 需要小端 FLOAT32 的 x/y/z 字段及完整数据缓冲区");
+      return;
+    }
+    const size_t total = static_cast<size_t>(message.width) * message.height;
+    const size_t stride = std::max<size_t>(1, total / 12000);
+    std::vector<cv::Vec3f> points;
+    points.reserve(std::min<size_t>(total, 12000));
+    for (size_t i = 0; i < total; i += stride) {
+      const size_t row = i / message.width;
+      const size_t col = i % message.width;
+      const uint8_t * data = message.data.data() + row * message.row_step + col * message.point_step;
+      cv::Vec3f point;
+      for (int axis = 0; axis < 3; ++axis) {
+        std::memcpy(&point[axis], data + offsets[axis], sizeof(float));
+      }
+      if (std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2])) {
+        points.push_back(point);
+      }
+    }
+    if (points.empty()) {return;}
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (!topic_input_active_ || !streaming_) {return;}
+    latest_cloud_ = std::move(points);
+    if (selection_.signal == "depth") {
+      topic_last_frame_time_ = std::chrono::steady_clock::now();
+      ++frame_sequence_;
+      frame_cv_.notify_all();
+    }
+  }
+
   void notifyHardwareDisconnected(const std::string & detail)
   {
     if (disconnect_notified_.exchange(true)) {return;}
@@ -740,6 +831,7 @@ private:
     topic_input_active_ = false;
     topic_raw_sub_.reset();
     topic_compressed_sub_.reset();
+    topic_cloud_sub_.reset();
     capture_device_.release();
 #ifdef DANMUCAMERA_HAS_ORBBEC
     {
@@ -800,11 +892,12 @@ private:
         bool timed_out = false;
         {
           std::lock_guard<std::mutex> lock(frame_mutex_);
-          timed_out = !latest_frame_.empty() &&
+          timed_out = (selection_.signal == "depth" ? !latest_cloud_.empty() :
+            !latest_frame_.empty()) &&
             std::chrono::steady_clock::now() - topic_last_frame_time_ >= 3s;
         }
         if (timed_out) {
-          notifyHardwareDisconnected("连续 3 秒没有收到 ROS 图像，已恢复为未连接状态");
+          notifyHardwareDisconnected("连续 3 秒没有收到 ROS 主信息流，已恢复为未连接状态");
         }
         std::this_thread::sleep_for(20ms);
         continue;
@@ -951,18 +1044,41 @@ private:
   {
     cv::Mat frame;
     std::map<std::string, cv::Mat> streams;
+    std::vector<cv::Vec3f> cloud;
     uint64_t sequence;
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       sequence = frame_sequence_;
-      if (!streaming_ || latest_frame_.empty() || sequence == published_sequence_) {return;}
+      if (!streaming_ || sequence == published_sequence_) {return;}
       frame = latest_frame_.clone();
       streams = latest_stream_frames_;
+      cloud = latest_cloud_;
     }
     published_sequence_ = sequence;
-    publishImage(frame, image_pub_, true);
+    if (!frame.empty()) {publishImage(frame, image_pub_, true);}
     for (const auto & [signal, image] : streams) {
       if (!image.empty()) {publishImage(image, stream_image_pub_, true, signal);}
+    }
+    if (!cloud.empty() &&
+      std::find(signals_.begin(), signals_.end(), "depth") != signals_.end()) {
+      sensor_msgs::msg::PointCloud2 message;
+      message.header.stamp = now();
+      message.header.frame_id = "depth";
+      message.height = 1;
+      message.width = static_cast<uint32_t>(cloud.size());
+      message.fields.resize(3);
+      for (size_t axis = 0; axis < 3; ++axis) {
+        message.fields[axis].name = std::string(1, "xyz"[axis]);
+        message.fields[axis].offset = static_cast<uint32_t>(axis * sizeof(float));
+        message.fields[axis].datatype = sensor_msgs::msg::PointField::FLOAT32;
+        message.fields[axis].count = 1;
+      }
+      message.point_step = 3 * sizeof(float);
+      message.row_step = message.width * message.point_step;
+      message.data.resize(message.row_step);
+      std::memcpy(message.data.data(), cloud.data(), message.data.size());
+      message.is_dense = true;
+      stream_cloud_pub_->publish(std::move(message));
     }
   }
 
@@ -1160,6 +1276,7 @@ private:
   std::condition_variable frame_cv_;
   cv::Mat latest_frame_;
   std::map<std::string, cv::Mat> latest_stream_frames_;
+  std::vector<cv::Vec3f> latest_cloud_;
   cv::Mat frozen_frame_;
   bool frozen_from_import_{false};
   uint64_t frame_sequence_{0};
@@ -1177,8 +1294,10 @@ private:
   rclcpp::CallbackGroup::SharedPtr topic_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr topic_raw_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr topic_compressed_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr topic_cloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr stream_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr stream_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr captured_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr viewed_original_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr viewed_error_pub_;

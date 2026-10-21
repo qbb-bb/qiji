@@ -12,6 +12,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QDialog;
+class QLineEdit;
 class QToolButton;
 class QGroupBox;
 class QLabel;
@@ -34,6 +35,7 @@ namespace danmucamera
 class CalibrationRosClient;
 class ImageLabel;
 class ImageQualityPanel;
+class PointCloudView;
 
 class CalibrationWindow : public QMainWindow
 {
@@ -66,6 +68,7 @@ private:
   void rebuildStreamMenu();
   QStringList checkedStreams() const;
   void applySelectedStreams();
+  void updateTopicInputsVisibility();
   void selectSample();
   void processNextBatchImage();
   void maybeSaveCurrentBatchImage();
@@ -99,6 +102,11 @@ private:
   QHash<QString, QCheckBox *> stream_actions_;
   QHash<QString, ImageLabel *> stream_views_;
   QHash<QString, QWidget *> stream_panels_;
+  QWidget * topic_inputs_panel_{nullptr};
+  QLineEdit * image_topic_edit_{nullptr};
+  QLineEdit * cloud_topic_edit_{nullptr};
+  QWidget * cloud_panel_{nullptr};
+  PointCloudView * cloud_view_{nullptr};
   std::vector<UiCameraDevice> available_devices_;
   QStringList active_streams_;
   bool stream_reconfigure_pending_{false};

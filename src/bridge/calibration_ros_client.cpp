@@ -5,6 +5,7 @@
 #include <rclcpp/parameter_client.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <thread>
 
@@ -142,6 +144,24 @@ public:
       contract::kStreamImageTopic, rclcpp::SensorDataQoS().keep_last(4),
       [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
         receiveViewedFrame(*message, owner_.onStreamFrame);
+      });
+    stream_cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+      contract::kStreamCloudTopic, rclcpp::SensorDataQoS().keep_last(1),
+      [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr message) {
+        if (!owner_.onStreamCloud || message->point_step != 3 * sizeof(float) ||
+          message->data.size() < static_cast<size_t>(message->width) * message->point_step) {
+          return;
+        }
+        std::vector<QVector3D> points;
+        points.reserve(message->width);
+        for (size_t i = 0; i < message->width; ++i) {
+          float xyz[3];
+          std::memcpy(xyz, message->data.data() + i * message->point_step, sizeof(xyz));
+          points.emplace_back(xyz[0], xyz[1], xyz[2]);
+        }
+        dispatch([this, points = std::move(points)]() {
+          if (owner_.onStreamCloud) {owner_.onStreamCloud(points);}
+        });
       });
     captured_image_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
       contract::kCapturedImageTopic, rclcpp::QoS(1).reliable(),
@@ -391,6 +411,7 @@ public:
   CornerCoverageThresholds corner_coverage_thresholds_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr stream_image_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr stream_cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr captured_image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr corner_preview_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guide_result_sub_;
@@ -474,27 +495,51 @@ void CalibrationRosClient::refreshDevices()
     });
 }
 
+void CalibrationRosClient::refreshTopicInputs()
+{
+  if (!impl_->parameter_client_->service_is_ready()) {return;}
+  impl_->parameter_client_->get_parameters(
+    {"topic_input.name", "topic_input.pointcloud_name"},
+    [this](std::shared_future<std::vector<rclcpp::Parameter>> future) {
+      const auto values = future.get();
+      if (values.size() != 2) {return;}
+      const QString image = QString::fromStdString(values[0].as_string());
+      const QString cloud = QString::fromStdString(values[1].as_string());
+      impl_->dispatch([this, image, cloud]() {
+        if (onTopicDefaults) {onTopicDefaults(image, cloud);}
+      });
+    });
+}
+
 void CalibrationRosClient::connectCamera(
   const QString & device_id, int width, int height, bool disable_ir_emitter,
-  const QStringList & stream_names)
+  const QStringList & stream_names, const QString & image_topic,
+  const QString & cloud_topic)
 {
   if (!impl_->parameter_client_->service_is_ready()) {
     impl_->log("相机参数服务未就绪");
     if (onConnectionChanged) {onConnectionChanged(false, "参数服务未就绪");}
     return;
   }
-  impl_->parameter_client_->set_parameters(
-    {rclcpp::Parameter("device", device_id.toStdString()),
+  std::vector<rclcpp::Parameter> parameters{
+    rclcpp::Parameter("device", device_id.toStdString()),
       rclcpp::Parameter("width", width), rclcpp::Parameter("height", height),
       rclcpp::Parameter("disable_ir_emitter", disable_ir_emitter),
       rclcpp::Parameter("signals", [&stream_names]() {
         std::vector<std::string> values;
         for (const auto & signal : stream_names) {values.push_back(signal.toStdString());}
         return values;
-      }())},
-    [this](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
+      }())};
+  if (device_id.startsWith(QStringLiteral("ros-topic:"))) {
+    parameters.emplace_back("topic_input.name", image_topic.toStdString());
+    parameters.emplace_back("topic_input.pointcloud_name", cloud_topic.toStdString());
+  }
+  const size_t expected = parameters.size();
+  impl_->parameter_client_->set_parameters(
+    parameters,
+    [this, expected](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
       const auto results = future.get();
-      if (results.size() != 5 || !std::all_of(results.begin(), results.end(),
+      if (results.size() != expected || !std::all_of(results.begin(), results.end(),
         [](const auto & result) {return result.successful;})) {
         impl_->dispatch([this, results]() {
           QString reason = QStringLiteral("设置相机参数失败");
