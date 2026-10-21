@@ -39,21 +39,15 @@ cv::Mat initialCamera(const cv::Size & size, const Settings & settings,
     return (cv::Mat_<double>(3, 3) << settings.fx, 0, settings.cx,
       0, settings.fy, settings.cy, 0, 0, 1);
   }
-  // 平面板先由单应性估计 K；鱼眼求解在估计失败时回退到视场角启发值。
-  cv::Mat initial;
-  try {
-    initial = cv::initCameraMatrix2D(objects, images, size, 0);
-  } catch (const cv::Exception &) {
-    if (settings.camera_model != "fisheye") {throw;}
-  }
-  if (settings.camera_model == "fisheye" &&
-    (initial.empty() || !cv::checkRange(initial) || initial.at<double>(0, 0) <= 0 ||
-    initial.at<double>(1, 1) <= 0)) {
+  if (settings.camera_model == "fisheye") {
+    // initCameraMatrix2D assumes a pinhole camera. On a fisheye image it can
+    // return very large, unequal focal lengths and make InitExtrinsics degenerate.
+    // Match OpenCV fisheye::calibrate's own no-guess initialization for the log.
     const double focal = std::max(size.width, size.height) / CV_PI;
-    initial = (cv::Mat_<double>(3, 3) << focal, 0, size.width / 2.0,
-      0, focal, size.height / 2.0, 0, 0, 1);
+    return (cv::Mat_<double>(3, 3) << focal, 0, (size.width - 1) / 2.0,
+      0, focal, (size.height - 1) / 2.0, 0, 0, 1);
   }
-  return initial;
+  return cv::initCameraMatrix2D(objects, images, size, 0);
 }
 
 std::string pathString(const std::filesystem::path & path)
@@ -246,8 +240,8 @@ int main(int argc, char ** argv)
     std::vector<cv::Mat> rvecs, tvecs;
     double rms;
     if (settings.camera_model == "fisheye") {
-      int flags = cv::fisheye::CALIB_USE_INTRINSIC_GUESS |
-        cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC | cv::fisheye::CALIB_FIX_SKEW;
+      int flags = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC | cv::fisheye::CALIB_FIX_SKEW;
+      if (!settings.automatic_initial) {flags |= cv::fisheye::CALIB_USE_INTRINSIC_GUESS;}
       if (settings.distortion_model == "fisheye2") {
         flags |= cv::fisheye::CALIB_FIX_K3 | cv::fisheye::CALIB_FIX_K4;
       }
