@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -40,10 +41,10 @@ cv::Mat initialCamera(const cv::Size & size, const Settings & settings,
       0, settings.fy, settings.cy, 0, 0, 1);
   }
   if (settings.camera_model == "fisheye") {
-    // initCameraMatrix2D assumes a pinhole camera. On a fisheye image it can
-    // return very large, unequal focal lengths and make InitExtrinsics degenerate.
-    // Match OpenCV fisheye::calibrate's own no-guess initialization for the log.
-    const double focal = std::max(size.width, size.height) / CV_PI;
+    // A fisheye focal length cannot be inferred by the pinhole homography
+    // initializer. Use a middle-of-range seed; automatic calibration below
+    // tries several focal lengths and keeps the lowest reprojection error.
+    const double focal = std::max(size.width, size.height) * 0.5;
     return (cv::Mat_<double>(3, 3) << focal, 0, (size.width - 1) / 2.0,
       0, focal, (size.height - 1) / 2.0, 0, 0, 1);
   }
@@ -240,14 +241,53 @@ int main(int argc, char ** argv)
     std::vector<cv::Mat> rvecs, tvecs;
     double rms;
     if (settings.camera_model == "fisheye") {
-      int flags = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC | cv::fisheye::CALIB_FIX_SKEW;
-      if (!settings.automatic_initial) {flags |= cv::fisheye::CALIB_USE_INTRINSIC_GUESS;}
+      int flags = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC |
+        cv::fisheye::CALIB_FIX_SKEW | cv::fisheye::CALIB_USE_INTRINSIC_GUESS;
       if (settings.distortion_model == "fisheye2") {
         flags |= cv::fisheye::CALIB_FIX_K3 | cv::fisheye::CALIB_FIX_K4;
       }
-      rms = cv::fisheye::calibrate(object_points, image_points, image_size,
-        K, D, rvecs, tvecs, flags,
-        cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
+      // OpenCV's no-guess fisheye initializer fixes f=max(w,h)/pi. On the
+      // supplied 118-degree lens that seed returned unchanged K, zero D, and
+      // a huge RMS without throwing. Try several plausible angular scales.
+      const double dimension = std::max(image_size.width, image_size.height);
+      const std::vector<double> focal_candidates = settings.automatic_initial ?
+        std::vector<double>{dimension * 0.32, dimension * 0.40,
+        dimension * 0.50, dimension * 0.625} :
+        std::vector<double>{settings.fx};
+      double best_rms = std::numeric_limits<double>::infinity();
+      std::string last_error;
+      for (const double focal : focal_candidates) {
+        cv::Mat candidate_K = K.clone();
+        if (settings.automatic_initial) {
+          candidate_K.at<double>(0, 0) = focal;
+          candidate_K.at<double>(1, 1) = focal;
+        }
+        cv::Mat candidate_D = D.clone();
+        std::vector<cv::Mat> candidate_rvecs, candidate_tvecs;
+        try {
+          const double candidate_rms = cv::fisheye::calibrate(
+            object_points, image_points, image_size, candidate_K, candidate_D,
+            candidate_rvecs, candidate_tvecs, flags,
+            cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
+          if (!std::isfinite(candidate_rms) || candidate_K.at<double>(0, 0) <= 0 ||
+            candidate_K.at<double>(1, 1) <= 0) {continue;}
+          std::cout << "鱼眼初值 fx=" << focal << "：RMS=" << candidate_rms << " px\n";
+          if (candidate_rms < best_rms) {
+            best_rms = candidate_rms;
+            K = candidate_K;
+            D = candidate_D;
+            rvecs = std::move(candidate_rvecs);
+            tvecs = std::move(candidate_tvecs);
+          }
+        } catch (const cv::Exception & error) {
+          last_error = error.what();
+          std::cout << "鱼眼初值 fx=" << focal << "：求解未收敛\n";
+        }
+      }
+      if (!std::isfinite(best_rms)) {
+        throw std::runtime_error("所有鱼眼初值均求解失败: " + last_error);
+      }
+      rms = best_rms;
     } else {
       int flags = cv::CALIB_USE_INTRINSIC_GUESS;
       if (settings.distortion_model == "rational8") {flags |= cv::CALIB_RATIONAL_MODEL;}
@@ -259,11 +299,33 @@ int main(int argc, char ** argv)
         K, D, rvecs, tvecs, flags,
         cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
     }
+    // A solver returning normally is not proof that its parameters converged.
+    // Reject results with pixel-scale residuals before exporting matrices and
+    // undistorted images that could be mistaken for valid calibration data.
+    const double max_rms = std::max(1.5, 0.001 * cv::norm(cv::Point2d(
+      image_size.width, image_size.height)));
+    if (!std::isfinite(rms) || rms > max_rms) {
+      std::ostringstream error;
+      error << "重投影 RMS " << rms << " px 超过可信上限 " << max_rms
+        << " px；本次结果不保存。请检查相机模型、棋盘尺寸与拍摄覆盖。";
+      throw std::runtime_error(error.str());
+    }
     std::cout << "RMS: " << std::setprecision(8) << rms << " px\n";
     std::cout << "相机内参矩阵 K (Camera Matrix):\n"; printMatrix(K);
     std::cout << "镜头畸变系数 (Distortion Coefficients):\n";
     cv::Mat D_row = D.reshape(1, 1);
     printMatrix(D_row);
+
+    cv::Mat fisheye_map_x, fisheye_map_y;
+    if (settings.camera_model == "fisheye") {
+      cv::Mat new_K;
+      cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
+        K, D, image_size, cv::Matx33d::eye(), new_K, 1.0, image_size);
+      cv::fisheye::initUndistortRectifyMap(
+        K, D, cv::Matx33d::eye(), new_K, image_size, CV_16SC2,
+        fisheye_map_x, fisheye_map_y);
+      std::cout << "去畸变输出：原图尺寸，balance=1（保留更大视场）；边缘无原始像素处显示黑色\n";
+    }
 
     const double scale = 3.0;
     cv::Mat global(static_cast<int>(image_size.height * scale),
@@ -309,7 +371,8 @@ int main(int argc, char ** argv)
       cv::Mat error_view = original.clone();
       cv::Mat undistorted;
       if (settings.camera_model == "fisheye") {
-        cv::fisheye::undistortImage(original, undistorted, K, D, K, original.size());
+        cv::remap(original, undistorted, fisheye_map_x, fisheye_map_y,
+          cv::INTER_LINEAR, cv::BORDER_CONSTANT);
       } else {
         cv::undistort(original, undistorted, K, D);
       }
