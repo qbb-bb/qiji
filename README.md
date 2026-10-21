@@ -6,11 +6,11 @@ Linux 上的 ROS 2 + Qt 6 + OpenCV 标定程序。相机采集支持 V4L2 彩色
 
 编译故障、换机安装命令和逐步验收见 [换机编译与测试说明](docs/换机编译与测试说明.md)。
 
-Ubuntu 22.04 新电脑可在图形桌面终端运行 `./launch/setup_and_run.sh`，自动安装 Qt 6、ROS 2 Humble 和其他必要依赖，随后编译并启动。首次运行需要联网和 sudo 权限。
+Ubuntu 22.04/24.04 新电脑可在图形桌面终端运行 `./launch/setup_and_run.sh`。脚本优先使用已安装的 ROS 2 Humble/Jazzy；完全没有 ROS 时才按 Ubuntu 22.04→Humble、24.04→Jazzy 安装，不会增加第二套 ROS。它只安装缺失的 Qt 6、OpenCV、ROS 2 和相机 SDK，随后编译并启动，还会在应用菜单和桌面生成“相机标定工作台”图标；已安装软件包不会被升级或卸载。首次补装需要联网和 sudo 权限。相机未插入时可用 `--camera=orbbec` 或 `--camera=realsense` 预装对应 SDK；已有多个 ROS 时可用 `--ros=jazzy` 或 `--ros=humble` 明确选择。
 
 只复制本目录的 `CMakeLists.txt`、`package.xml`、`src/`、`config/`、`launch/`、`docs/` 和本 README。`build/`、`install/`、`log/` 是本机产物，不要复制；`samples/` 与 `result/calibration/` 是个人数据，按需备份。新电脑须重新标定新相机及其各个分辨率和成像器。
 
-先安装 ROS 2（含 `ament_cmake`、`rclcpp`、`rcl_interfaces`、`sensor_msgs`、`std_msgs`、`std_srvs`、`launch_ros`）、`colcon`、C++17 编译器、Qt 6 Widgets、OpenCV（含 ArUco）和 `v4l-utils`。按相机厂商提供的说明安装 SDK、运行库和 USB/udev 权限规则。SDK 安装后重新插拔相机。普通 V4L2 相机无需厂商 SDK。
+如需手动安装，先准备 ROS 2（含 `ament_cmake`、`rclcpp`、`rcl_interfaces`、`sensor_msgs`、`std_msgs`、`std_srvs`、`launch_ros`）、`colcon`、C++17 编译器、Qt 6 Widgets、OpenCV（含 ArUco）和 `v4l-utils`。按相机厂商提供的说明安装 SDK、运行库和 USB/udev 权限规则。SDK 安装后重新插拔相机。普通 V4L2 相机无需厂商 SDK。
 
 CMake 通过系统搜索路径和 `CMAKE_PREFIX_PATH` 查找 SDK，不写死用户名或 ROS 安装目录。如 SDK 安装在自定义位置，先将其安装前缀加入 `CMAKE_PREFIX_PATH`。新厂商 SDK 仍需在 `src/bridge/io_node.cpp` 增加枚举、开流、取帧和释放的实现。
 
@@ -20,7 +20,7 @@ cd /你的路径/qiji
 ./launch/run.sh
 ```
 
-`build.sh` 和 `run.sh` 优先使用已加载的 ROS 环境；未加载时从 `/opt/ros/${ROS_DISTRO:-humble}` 查找。构建输出位于本目录的 `build/`、`install/`、`log/`。`run.sh` 自动进入本目录，原图保存到 `samples/`，每次标定完成后在 `result/` 自动生成 `calibration_report_时间戳.md`，记录设置与阈值、逐图检测、九宫格覆盖、重投影误差和结果文件；其他标定结果保存在 `result/calibration/`。若只想手动启动，可在本目录加载 ROS 与 `install/setup.bash`，再运行 `ros2 launch danmucamera calibration.launch.py`。
+`build.sh` 和 `run.sh` 优先使用 `QIJI_ROS_DISTRO` 或已加载的 ROS 环境；否则检测 `/opt/ros` 中的现有安装。构建输出位于本目录的 `build/`、`install/`、`log/`。`run.sh` 自动进入本目录，原图保存到 `samples/`，每次标定完成后在 `result/` 自动生成 `calibration_report_时间戳.md`，记录设置与阈值、逐图检测、九宫格覆盖、重投影误差和结果文件；其他标定结果保存在 `result/calibration/`。若只想手动启动，可在本目录加载 ROS 与 `install/setup.bash`，再运行 `ros2 launch danmucamera calibration.launch.py`。
 
 构建输出中有 `RealSense SDK backend enabled` 或 `Orbbec SDK v2 backend enabled`，表示对应后端已编入。若未显示，检查 SDK 开发头文件、动态库和 CMake 搜索路径，然后清理本目录的 `build/danmucamera/` 并重新构建。
 

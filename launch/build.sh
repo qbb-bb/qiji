@@ -3,21 +3,22 @@ set +u
 set -e
 script_path="${BASH_SOURCE[0]}"
 [[ "${script_path}" == */* ]] || script_path="$(command -v "${script_path}")"
-source "${script_path%/*}/clean_snap_env.sh"
 package_root="$(cd "${script_path%/*}/.." && pwd)"
-if ! command -v ros2 >/dev/null 2>&1; then
-  ros_setup="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
-  if [[ ! -f "${ros_setup}" ]]; then
-    echo "未找到 ROS 2。请先安装并 source 对应发行版，或设置 ROS_DISTRO。" >&2
-    exit 1
-  fi
-  source "${ros_setup}"
-fi
+source "${script_path%/*}/select_ros.sh"
+source "${script_path%/*}/clean_snap_env.sh"
+unset ROS_DISTRO
+source "/opt/ros/${QIJI_ROS_DISTRO}/setup.bash"
 cd "${package_root}"
 # CMake can retain a Snap runtime path from a previous build in its cache.
 cache="${package_root}/build/danmucamera/CMakeCache.txt"
 ui_binary="${package_root}/build/danmucamera/calibration_ui"
-if { [[ -f "${cache}" ]] && grep -Fq '/snap/' "${cache}"; } || \
+cache_home=""
+if [[ -f "${cache}" ]]; then
+  cache_home="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cache}")"
+fi
+if { [[ -n "${cache_home}" && "${cache_home}" != "${package_root}" ]]; } || \
+   { [[ -f "${cache}" ]] && grep -Fq '/snap/' "${cache}"; } || \
+   { [[ -f "${cache}" && -n "${QIJI_ROS_DISTRO:-}" ]] && grep -E '/opt/ros/[^/]+' "${cache}" | grep -Fvq "/opt/ros/${QIJI_ROS_DISTRO}/"; } || \
    { [[ -f "${ui_binary}" ]] && command -v readelf >/dev/null 2>&1 && readelf -d "${ui_binary}" | grep -Fq '/snap/'; }; then
   rm -rf -- "${package_root}/build/danmucamera"
 fi
