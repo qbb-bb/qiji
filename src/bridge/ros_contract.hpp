@@ -34,4 +34,22 @@ inline constexpr char kSaveService[] = "/calibration/camera/save";
 inline constexpr char kRefreshDevicesService[] = "/calibration/camera/refresh_devices";
 inline constexpr char kRunCalibrationService[] = "/calibration/algorithm/run";
 inline constexpr char kCameraNode[] = "/calibration_camera";
+
+// 相机-雷达外参输入契约。图像/点云仍由 calibration_camera 的现有
+// topic_input 参数和 UI“信息流”选择决定；CameraInfo 与配对阈值属于算法桥。
+// 消息格式、时间戳和坐标系约束见 docs/ROS相机雷达外参输入接口.md。
+namespace extrinsic_input
+{
+inline constexpr char kImageParameter[] = "topic_input.name";
+inline constexpr char kImageTypeParameter[] = "topic_input.type";
+inline constexpr char kCloudParameter[] = "topic_input.pointcloud_name";
+inline constexpr char kCommandParameter[] = "topic_input.control_command";
+inline constexpr char kStatusParameter[] = "topic_input.control_status";
+inline constexpr char kCameraInfoParameter[] = "inputs.extrinsic.camera_info";
+inline constexpr char kMaxPairDeltaParameter[] = "inputs.extrinsic.max_pair_delta_ms";
+inline constexpr char kRawImageType[] = "sensor_msgs/msg/Image";
+inline constexpr char kCompressedImageType[] = "sensor_msgs/msg/CompressedImage";
+inline constexpr char kCloudType[] = "sensor_msgs/msg/PointCloud2";
+inline constexpr char kCameraInfoType[] = "sensor_msgs/msg/CameraInfo";
+}  // namespace extrinsic_input
 }  // namespace danmucamera::contract

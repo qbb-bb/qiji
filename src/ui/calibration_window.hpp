@@ -69,6 +69,7 @@ private:
   QStringList checkedStreams() const;
   void applySelectedStreams();
   void updateTopicInputsVisibility();
+  void updateExtrinsicInputPanel();
   void selectSample();
   void processNextBatchImage();
   void maybeSaveCurrentBatchImage();
@@ -105,6 +106,13 @@ private:
   QWidget * topic_inputs_panel_{nullptr};
   QLineEdit * image_topic_edit_{nullptr};
   QLineEdit * cloud_topic_edit_{nullptr};
+  QLineEdit * topic_control_command_edit_{nullptr};
+  QLineEdit * topic_control_status_edit_{nullptr};
+  QGroupBox * extrinsic_input_panel_{nullptr};
+  QLabel * extrinsic_source_label_{nullptr};
+  QLineEdit * extrinsic_camera_info_edit_{nullptr};
+  QDoubleSpinBox * extrinsic_pair_delta_spin_{nullptr};
+  QPushButton * apply_extrinsic_input_button_{nullptr};
   QWidget * cloud_panel_{nullptr};
   PointCloudView * cloud_view_{nullptr};
   std::vector<UiCameraDevice> available_devices_;

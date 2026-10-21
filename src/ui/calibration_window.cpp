@@ -26,6 +26,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QLabel>
 #include <QLayout>
 #include <QListWidget>
@@ -132,8 +133,12 @@ CalibrationWindow::CalibrationWindow(CalibrationRosClient & transport)
   QTimer::singleShot(600, this, [this]() {
     transport_.refreshDevices();
     transport_.refreshTopicInputs();
+    transport_.refreshExtrinsicInput();
   });
-  QTimer::singleShot(2000, this, [this]() {transport_.refreshTopicInputs();});
+  QTimer::singleShot(2000, this, [this]() {
+    transport_.refreshTopicInputs();
+    transport_.refreshExtrinsicInput();
+  });
 }
 
 CalibrationWindow::~CalibrationWindow()
@@ -186,8 +191,11 @@ void CalibrationWindow::buildUi()
   ui_->homeRoot->setStretch(3, 1);
   ui_->cameraControls->setSpacing(5);
   topic_inputs_panel_ = new QWidget(home_page_);
-  auto * topic_layout = new QHBoxLayout(topic_inputs_panel_);
-  topic_layout->setContentsMargins(0, 2, 0, 2);
+  auto * topic_root = new QVBoxLayout(topic_inputs_panel_);
+  topic_root->setContentsMargins(0, 2, 0, 2);
+  topic_root->setSpacing(3);
+  auto * topic_layout = new QHBoxLayout();
+  topic_root->addLayout(topic_layout);
   topic_layout->addWidget(new QLabel(QStringLiteral("图像话题"), topic_inputs_panel_));
   image_topic_edit_ = new QLineEdit(topic_inputs_panel_);
   image_topic_edit_->setPlaceholderText(QStringLiteral("/camera/image_raw"));
@@ -196,8 +204,43 @@ void CalibrationWindow::buildUi()
   cloud_topic_edit_ = new QLineEdit(topic_inputs_panel_);
   cloud_topic_edit_->setPlaceholderText(QStringLiteral("/camera/points"));
   topic_layout->addWidget(cloud_topic_edit_, 1);
+  auto * control_layout = new QHBoxLayout();
+  topic_root->addLayout(control_layout);
+  control_layout->addWidget(new QLabel(QStringLiteral("驱动启停（可选）· 命令"), topic_inputs_panel_));
+  topic_control_command_edit_ = new QLineEdit(topic_inputs_panel_);
+  topic_control_command_edit_->setPlaceholderText(QStringLiteral("/driver/stream_command"));
+  control_layout->addWidget(topic_control_command_edit_, 1);
+  control_layout->addWidget(new QLabel(QStringLiteral("状态"), topic_inputs_panel_));
+  topic_control_status_edit_ = new QLineEdit(topic_inputs_panel_);
+  topic_control_status_edit_->setPlaceholderText(QStringLiteral("/driver/stream_status"));
+  control_layout->addWidget(topic_control_status_edit_, 1);
   ui_->cameraControls->insertWidget(1, topic_inputs_panel_);
   topic_inputs_panel_->hide();
+  extrinsic_input_panel_ = new QGroupBox(QStringLiteral("相机与雷达外参 · Topic 输入"), home_page_);
+  auto * extrinsic_layout = new QFormLayout(extrinsic_input_panel_);
+  extrinsic_layout->setContentsMargins(10, 7, 10, 7);
+  extrinsic_layout->setHorizontalSpacing(12);
+  extrinsic_source_label_ = new QLabel(extrinsic_input_panel_);
+  extrinsic_source_label_->setWordWrap(true);
+  extrinsic_layout->addRow(QStringLiteral("当前流"), extrinsic_source_label_);
+  extrinsic_camera_info_edit_ = new QLineEdit(extrinsic_input_panel_);
+  extrinsic_camera_info_edit_->setPlaceholderText(QStringLiteral("/camera/color/camera_info"));
+  extrinsic_layout->addRow(QStringLiteral("相机 CameraInfo"), extrinsic_camera_info_edit_);
+  auto * pair_row = new QWidget(extrinsic_input_panel_);
+  auto * pair_layout = new QHBoxLayout(pair_row);
+  pair_layout->setContentsMargins(0, 0, 0, 0);
+  extrinsic_pair_delta_spin_ = new QDoubleSpinBox(pair_row);
+  extrinsic_pair_delta_spin_->setRange(0.1, 1000.0);
+  extrinsic_pair_delta_spin_->setDecimals(1);
+  extrinsic_pair_delta_spin_->setSuffix(QStringLiteral(" ms"));
+  extrinsic_pair_delta_spin_->setValue(50.0);
+  pair_layout->addWidget(extrinsic_pair_delta_spin_);
+  pair_layout->addStretch(1);
+  apply_extrinsic_input_button_ = new QPushButton(QStringLiteral("应用外参输入"), pair_row);
+  pair_layout->addWidget(apply_extrinsic_input_button_);
+  extrinsic_layout->addRow(QStringLiteral("时间配对容差"), pair_row);
+  ui_->cameraControls->insertWidget(2, extrinsic_input_panel_);
+  extrinsic_input_panel_->hide();
   ui_->deviceActions->setSpacing(7);
   ui_->captureActions->setSpacing(7);
   signal_notice_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -661,6 +704,7 @@ void CalibrationWindow::applySelectedStreams()
     QStringLiteral("右红外") : QStringLiteral("RGB 彩色"));
   home_live_view_->setPlaceholder(primary + QStringLiteral(" 实时画面"));
   setEqualImageSizes(home_image_splitter_);
+  updateExtrinsicInputPanel();
   updateCalibrationAvailability();
   if (!camera_connected_ || requested == active_streams_) {return;}
   stream_reconfigure_pending_ = true;
@@ -674,7 +718,9 @@ void CalibrationWindow::applySelectedStreams()
     active_streams_ = requested;
     transport_.connectCamera(new_id, active_width_, active_height_,
       disable_emitter_checkbox_->isChecked(), requested,
-      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed());
+      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
+      topic_control_command_edit_->text().trimmed(),
+      topic_control_status_edit_->text().trimmed());
   }
 }
 
@@ -687,6 +733,28 @@ void CalibrationWindow::updateTopicInputsVisibility()
     connect_button_->setEnabled(camera_combo_->count() > 0 &&
       (!is_ros || !checkedStreams().isEmpty()));
   }
+  updateExtrinsicInputPanel();
+}
+
+void CalibrationWindow::updateExtrinsicInputPanel()
+{
+  if (!extrinsic_input_panel_) {return;}
+  const bool selected = selectedCalibrationKind() == CalibrationKind::Extrinsic;
+  extrinsic_input_panel_->setVisible(selected);
+  if (!selected) {return;}
+  const bool ros_source = selected_backend_name_ == QStringLiteral("ros-topic");
+  const bool paired = checkedStreams().contains(QStringLiteral("rgb")) &&
+    checkedStreams().contains(QStringLiteral("depth"));
+  const QString image = image_topic_edit_->text().trimmed();
+  const QString cloud = cloud_topic_edit_->text().trimmed();
+  const QString info = extrinsic_camera_info_edit_->text().trimmed();
+  extrinsic_source_label_->setText(ros_source ?
+    QStringLiteral("图像 %1  ·  点云 %2（沿用上方话题与勾选的信息流）")
+      .arg(image.isEmpty() ? QStringLiteral("未填写") : image,
+      cloud.isEmpty() ? QStringLiteral("未填写") : cloud) :
+    QStringLiteral("请先选择 [ROS-TOPIC] ROS Camera，再同时勾选 RGB 与 3D 点云。"));
+  apply_extrinsic_input_button_->setEnabled(ros_source && paired &&
+    image.startsWith('/') && cloud.startsWith('/') && info.startsWith('/'));
 }
 
 void CalibrationWindow::buildHomePage()
@@ -696,9 +764,18 @@ void CalibrationWindow::buildHomePage()
       rebuildStreamMenu();
       updateTopicInputsVisibility();
     }
+    updateExtrinsicInputPanel();
   };
   connect(image_topic_edit_, &QLineEdit::textChanged, this, topic_changed);
   connect(cloud_topic_edit_, &QLineEdit::textChanged, this, topic_changed);
+  connect(extrinsic_camera_info_edit_, &QLineEdit::textChanged, this,
+    [this](const QString &) {updateExtrinsicInputPanel();});
+  connect(apply_extrinsic_input_button_, &QPushButton::clicked, this, [this]() {
+    if (!apply_extrinsic_input_button_->isEnabled()) {return;}
+    apply_extrinsic_input_button_->setEnabled(false);
+    transport_.setExtrinsicInput(extrinsic_camera_info_edit_->text().trimmed(),
+      extrinsic_pair_delta_spin_->value());
+  });
   connect(camera_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
     selected_signal_calibratable_ = camera_combo_->itemData(index, Qt::UserRole + 1).toBool();
     selected_signal_name_ = camera_combo_->itemData(index, Qt::UserRole + 2).toString();
@@ -711,7 +788,10 @@ void CalibrationWindow::buildHomePage()
     updateCalibrationAvailability();
   });
   connect(calibration_type_combo_, qOverload<int>(&QComboBox::currentIndexChanged),
-    this, [this](int) {updateCalibrationAvailability();});
+    this, [this](int) {
+      updateExtrinsicInputPanel();
+      updateCalibrationAvailability();
+    });
   connect(disable_emitter_checkbox_, &QCheckBox::toggled, this, [this]() {
     if (camera_connected_) {
       emitter_change_pending_ = true;
@@ -740,7 +820,9 @@ void CalibrationWindow::buildHomePage()
     transport_.connectCamera(
       connected_device_id_, active_width_, active_height_,
       disable_emitter_checkbox_->isChecked(), active_streams_,
-      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed());
+      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
+      topic_control_command_edit_->text().trimmed(),
+      topic_control_status_edit_->text().trimmed());
   });
   connect(disconnect_button_, &QPushButton::clicked, this, [this]() {
     camera_operation_pending_ = true;
@@ -1023,6 +1105,20 @@ void CalibrationWindow::bindTransport()
     if (!image_topic_edit_->isModified()) {image_topic_edit_->setText(image);}
     if (!cloud_topic_edit_->isModified()) {cloud_topic_edit_->setText(cloud);}
   };
+  transport_.onTopicControlDefaults = [this](const QString & command, const QString & status) {
+    if (!topic_control_command_edit_->isModified()) {topic_control_command_edit_->setText(command);}
+    if (!topic_control_status_edit_->isModified()) {topic_control_status_edit_->setText(status);}
+  };
+  transport_.onExtrinsicInput = [this](const QString & info, double max_delta) {
+    if (!extrinsic_camera_info_edit_->isModified()) {extrinsic_camera_info_edit_->setText(info);}
+    if (!extrinsic_pair_delta_spin_->hasFocus()) {extrinsic_pair_delta_spin_->setValue(max_delta);}
+    updateExtrinsicInputPanel();
+  };
+  transport_.onExtrinsicInputSaved = [this](bool success, const QString & message) {
+    updateExtrinsicInputPanel();
+    appendLog(message);
+    if (!success) {signal_notice_->setText(message);}
+  };
   transport_.onCapturedFrame = [this](const QImage & frame) {
     if (pages_->currentWidget() == home_page_) {
       home_capture_frozen_ = true;
@@ -1255,6 +1351,8 @@ void CalibrationWindow::bindTransport()
     camera_combo_->setEnabled(!connected);
     image_topic_edit_->setEnabled(!connected);
     cloud_topic_edit_->setEnabled(!connected);
+    topic_control_command_edit_->setEnabled(!connected);
+    topic_control_status_edit_->setEnabled(!connected);
     stream_button_->setEnabled(connected || camera_combo_->count() > 0);
     resolution_combo_->setEnabled(!connected &&
       selected_backend_name_ != QStringLiteral("ros-topic"));
@@ -1309,6 +1407,25 @@ void CalibrationWindow::bindTransport()
   transport_.onStreamingChanged = [this](bool streaming, const QString & message) {
     camera_operation_pending_ = false;
     camera_streaming_ = streaming;
+    if (streaming && selected_backend_name_ == QStringLiteral("ros-topic")) {
+      const auto match = QRegularExpression(
+        QStringLiteral("可用信息流\\s+([a-z,-]+)")).match(message);
+      if (match.hasMatch()) {
+        const QStringList available = match.captured(1).split(',', Qt::SkipEmptyParts);
+        for (auto it = stream_actions_.begin(); it != stream_actions_.end(); ++it) {
+          const QSignalBlocker blocker(it.value());
+          it.value()->setChecked(available.contains(it.key()));
+        }
+        active_streams_ = available;
+        selected_signal_name_ = available.contains(QStringLiteral("rgb")) ?
+          QStringLiteral("rgb") : QStringLiteral("depth");
+        selected_signal_calibratable_ = selected_signal_name_ == QStringLiteral("rgb");
+        home_primary_panel_->setVisible(selected_signal_calibratable_);
+        cloud_panel_->setVisible(available.contains(QStringLiteral("depth")));
+        updateExtrinsicInputPanel();
+        updateCalibrationAvailability();
+      }
+    }
     start_stop_button_->setEnabled(camera_connected_);
     calibration_start_stop_button_->setEnabled(camera_connected_);
     disconnect_button_->setEnabled(camera_connected_);
@@ -1371,7 +1488,9 @@ void CalibrationWindow::bindTransport()
       active_streams_ = checkedStreams();
       transport_.connectCamera(new_id, active_width_, active_height_,
         disable_emitter_checkbox_->isChecked(), active_streams_,
-        image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed());
+        image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
+        topic_control_command_edit_->text().trimmed(),
+        topic_control_status_edit_->text().trimmed());
     }
   };
   transport_.onCameraCommandFailed = [this](const QString & message) {
@@ -2116,8 +2235,17 @@ void CalibrationWindow::updateCalibrationAvailability()
     confirmed_emitter_disabled_);
   enter_calibration_button_->setEnabled(enabled);
   if (!calibrationKindAvailable()) {
-    signal_notice_->setText(QStringLiteral("%1：接口已预留，当前版本尚未提供标定功能。")
-      .arg(calibration_type_combo_->currentText()));
+    if (selectedCalibrationKind() == CalibrationKind::Extrinsic) {
+      const bool ready_sources = selected_backend_name_ == QStringLiteral("ros-topic") &&
+        checkedStreams().contains(QStringLiteral("rgb")) &&
+        checkedStreams().contains(QStringLiteral("depth"));
+      signal_notice_->setText(ready_sources ?
+        QStringLiteral("相机与雷达外参：已选择图像和点云；输入接口已预留，求解功能尚未实现。") :
+        QStringLiteral("相机与雷达外参需要 ROS Topic 模式，并同时勾选 RGB 和 3D 点云。"));
+    } else {
+      signal_notice_->setText(QStringLiteral("%1：接口已预留，当前版本尚未提供标定功能。")
+        .arg(calibration_type_combo_->currentText()));
+    }
     signal_notice_->setStyleSheet("color:#ffc857;");
     return;
   }

@@ -12,6 +12,11 @@ calibration_camera:
       # 同一 ROS 相机的 PointCloud2 启动默认话题。留空时可在界面填写。
       # “信息流”可单选或同时勾选 RGB 和点云；点云可旋转、缩放。
       pointcloud_name: ""
+      # 可选驱动适配协议：两项同时填写才启用实际硬件启停；留空时只控制本程序订阅。
+      # command: std_msgs/msg/Bool (true 启动、false 停止)
+      # status: std_msgs/msg/String (connected/streaming/stopped/disconnected/error:原因)
+      control_command: ""
+      control_status: ""
     # 左右红外流默认关闭主动红外投射器，得到无散斑叠加的纯灰度图。
     disable_ir_emitter: true
     width: 1280
@@ -25,6 +30,14 @@ calibration_camera:
 
 calibration_algorithm_bridge:
   ros__parameters:
+    # ROS Topic 相机-雷达外参输入：图像与点云沿用上方 topic_input 和首页
+    # “信息流”中勾选的 RGB + 3D 点云，不需再填一套话题名。
+    # 当前版本只预留输入接口，外参求解仍未启用；完整契约见
+    # docs/ROS相机雷达外参输入接口.md。
+    inputs:
+      extrinsic:
+        camera_info: ""          # sensor_msgs/msg/CameraInfo，须与图像相机匹配
+        max_pair_delta_ms: 50.0  # 图像/点云时间戳最大差值
     # sample_paths 不写在静态配置中；UI 每次运行前只传右侧本次会话列表。
     # 空字符串表示自动寻找同一 ROS 包内的 calibration_solver 可执行文件。
     algorithm_executable: ""

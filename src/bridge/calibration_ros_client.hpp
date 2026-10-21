@@ -138,10 +138,13 @@ public:
   bool spinSome();
   void refreshDevices();
   void refreshTopicInputs();
+  void refreshExtrinsicInput();
+  void setExtrinsicInput(const QString & camera_info, double max_pair_delta_ms);
   void connectCamera(
     const QString & device_id, int width, int height, bool disable_ir_emitter,
     const QStringList & stream_names = {}, const QString & image_topic = {},
-    const QString & cloud_topic = {});
+    const QString & cloud_topic = {}, const QString & control_command = {},
+    const QString & control_status = {});
   void startCamera();
   void stopCamera();
   void setIrEmitterDisabled(bool disabled);
@@ -183,6 +186,9 @@ public:
   std::function<void(const QString &)> onResult;
   std::function<void(const std::vector<UiCameraDevice> &)> onDevices;
   std::function<void(const QString &, const QString &)> onTopicDefaults;
+  std::function<void(const QString &, const QString &)> onTopicControlDefaults;
+  std::function<void(const QString &, double)> onExtrinsicInput;
+  std::function<void(bool, const QString &)> onExtrinsicInputSaved;
   std::function<void(bool, const QString &)> onStreamingChanged;
   std::function<void(bool, const QString &)> onIrEmitterChanged;
   std::function<void(bool, const QString &)> onConnectionChanged;

@@ -6,6 +6,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -84,9 +85,11 @@ public:
         "已有一个 danmucamera io_node 正在运行；请关闭旧程序后再启动，避免相机状态错乱");
     }
     declare_parameter<std::string>("device", "auto");
-    declare_parameter<std::string>("topic_input.name", "");
-    declare_parameter<std::string>("topic_input.type", "auto");
-    declare_parameter<std::string>("topic_input.pointcloud_name", "");
+    declare_parameter<std::string>(contract::extrinsic_input::kImageParameter, "");
+    declare_parameter<std::string>(contract::extrinsic_input::kImageTypeParameter, "auto");
+    declare_parameter<std::string>(contract::extrinsic_input::kCloudParameter, "");
+    declare_parameter<std::string>(contract::extrinsic_input::kCommandParameter, "");
+    declare_parameter<std::string>(contract::extrinsic_input::kStatusParameter, "");
     topic_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     declare_parameter<bool>("disable_ir_emitter", true);
     declare_parameter<std::vector<std::string>>("signals", std::vector<std::string>{"rgb"});
@@ -267,14 +270,32 @@ private:
         response.message = "相机已经关闭";
         return;
       }
+      bool driver_stopped = true;
+      if (topic_control_pub_) {
+        std_msgs::msg::Bool command;
+        command.data = false;
+        uint64_t previous;
+        {
+          std::lock_guard<std::mutex> status_lock(topic_control_mutex_);
+          previous = topic_control_sequence_;
+        }
+        topic_control_pub_->publish(command);
+        std::unique_lock<std::mutex> status_lock(topic_control_mutex_);
+        driver_stopped = topic_control_cv_.wait_for(status_lock, 3s,
+          [this, previous]() {
+            return topic_control_sequence_ > previous &&
+              (topic_control_status_ == "stopped" || topic_control_status_ == "disconnected");
+          });
+      }
       streaming_ = false;
       release_requested_ = true;
       std::unique_lock<std::mutex> lock(release_mutex_);
       const bool released = release_cv_.wait_for(
         lock, 3s, [this]() {return !release_requested_.load();});
       response.success = released;
-      response.message = released ? "相机采流已关闭，设备参数连接仍可保留" :
-        "相机关闭超时，请稍后重试";
+      response.message = !driver_stopped ? "已停止本程序订阅，但驱动未确认停止，请检查控制状态话题" :
+        (released ? "相机采流已关闭，设备参数连接仍可保留" :
+        "相机关闭超时，请稍后重试");
       publishEvent(response.message);
       return;
     }
@@ -312,7 +333,8 @@ private:
         [](const std::string & signal) {return signal != "rgb" && signal != "depth";}),
         signals_.end());
     }
-    if (std::find(signals_.begin(), signals_.end(), selection_.signal) == signals_.end()) {
+    if (selection_.backend != "ros-topic" &&
+      std::find(signals_.begin(), signals_.end(), selection_.signal) == signals_.end()) {
       signals_.insert(signals_.begin(), selection_.signal);
     }
     disconnect_notified_ = false;
@@ -322,6 +344,47 @@ private:
       response.success = false;
       response.message = error;
       return;
+    }
+    uint64_t control_initial_sequence = 0;
+    if (topic_control_pub_) {
+      const auto discovery_deadline = std::chrono::steady_clock::now() + 2s;
+      while (topic_control_pub_->get_subscription_count() == 0 &&
+        std::chrono::steady_clock::now() < discovery_deadline) {
+        std::this_thread::sleep_for(20ms);
+      }
+      if (topic_control_pub_->get_subscription_count() == 0) {
+        releaseCameraResources();
+        response.success = false;
+        response.message = "驱动命令话题没有订阅者；请启动实现控制协议的适配节点";
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> status_lock(topic_control_mutex_);
+        control_initial_sequence = topic_control_sequence_;
+      }
+      std_msgs::msg::Bool command;
+      command.data = true;
+      topic_control_pub_->publish(command);
+      std::unique_lock<std::mutex> status_lock(topic_control_mutex_);
+      const bool started = topic_control_cv_.wait_for(status_lock, 3s,
+        [this, control_initial_sequence]() {
+          return topic_control_sequence_ > control_initial_sequence &&
+            (topic_control_status_ == "streaming" ||
+            topic_control_status_ == "disconnected" ||
+            topic_control_status_.rfind("error:", 0) == 0);
+        });
+      const auto status = topic_control_status_;
+      status_lock.unlock();
+      if (!started || status != "streaming") {
+        std_msgs::msg::Bool stop_command;
+        stop_command.data = false;
+        topic_control_pub_->publish(stop_command);
+        releaseCameraResources();
+        response.success = false;
+        response.message = started ? "驱动启动失败: " + status :
+          "驱动 3 秒内未确认 streaming 状态";
+        return;
+      }
     }
     uint64_t initial_sequence;
     {
@@ -333,12 +396,19 @@ private:
       std::unique_lock<std::mutex> lock(frame_mutex_);
       const bool received_frame = frame_cv_.wait_for(lock, 5s,
         [this, initial_sequence]() {
-          return !streaming_ || (frame_sequence_ > initial_sequence &&
-            (selection_.signal == "depth" ? !latest_cloud_.empty() : !latest_frame_.empty()));
+          const bool ready = selection_.backend == "ros-topic" ?
+            (!latest_frame_.empty() || !latest_cloud_.empty()) : !latest_frame_.empty();
+          return !streaming_ || (frame_sequence_ > initial_sequence && ready);
         }) && streaming_ &&
-        (selection_.signal == "depth" ? !latest_cloud_.empty() : !latest_frame_.empty());
+        (selection_.backend == "ros-topic" ?
+        (!latest_frame_.empty() || !latest_cloud_.empty()) : !latest_frame_.empty());
       if (!received_frame) {
         lock.unlock();
+        if (topic_control_pub_) {
+          std_msgs::msg::Bool stop_command;
+          stop_command.data = false;
+          topic_control_pub_->publish(stop_command);
+        }
         streaming_ = false;
         release_requested_ = true;
         std::unique_lock<std::mutex> release_lock(release_mutex_);
@@ -347,14 +417,33 @@ private:
         });
         response.success = false;
         response.message = selection_.backend == "ros-topic" ?
-          "5 秒内未收到 ROS 主信息流；请检查话题名、网络发现、QoS 和发布端" :
+          "5 秒内未收到 ROS 图像或点云；请检查话题名、网络发现、QoS 和发布端" :
           "相机未收到有效画面或设备已断开；请检查流格式、分辨率和 USB 连接";
         publishEvent(response.message);
         return;
       }
     }
+    std::vector<std::string> received_signals;
+    if (selection_.backend == "ros-topic") {
+      std::unique_lock<std::mutex> lock(frame_mutex_);
+      if (signals_.size() > 1) {
+        frame_cv_.wait_for(lock, 750ms, [this]() {
+          return !latest_frame_.empty() && !latest_cloud_.empty();
+        });
+      }
+      if (!latest_frame_.empty()) {received_signals.push_back("rgb");}
+      if (!latest_cloud_.empty()) {received_signals.push_back("depth");}
+      selection_.signal = !latest_frame_.empty() ? "rgb" : "depth";
+    }
     response.success = true;
     response.message = "相机已启动: " + selection_.backend + "/" + selection_.signal;
+    if (selection_.backend == "ros-topic") {
+      response.message += "，可用信息流 ";
+      for (size_t i = 0; i < received_signals.size(); ++i) {
+        if (i != 0) {response.message += ",";}
+        response.message += received_signals[i];
+      }
+    }
     if (selection_.signal != "depth") {
       response.message += "，实际分辨率 " + std::to_string(width_) + "x" +
         std::to_string(height_);
@@ -464,58 +553,67 @@ private:
         const auto topic = get_parameter("topic_input.name").as_string();
         const auto cloud_topic = get_parameter("topic_input.pointcloud_name").as_string();
         auto type = get_parameter("topic_input.type").as_string();
-        const bool use_image = std::find(signals_.begin(), signals_.end(), "rgb") != signals_.end();
-        const bool use_cloud = std::find(signals_.begin(), signals_.end(), "depth") != signals_.end();
-        if (use_image && (topic.empty() || topic.front() != '/')) {
-          error = "topic_input.name 必须填写以 / 开头的 ROS 图像话题名";
+        const auto command_topic = get_parameter(
+          contract::extrinsic_input::kCommandParameter).as_string();
+        const auto status_topic = get_parameter(
+          contract::extrinsic_input::kStatusParameter).as_string();
+        if (command_topic.empty() != status_topic.empty() ||
+          (!command_topic.empty() && (command_topic.front() != '/' ||
+          status_topic.front() != '/' || command_topic == status_topic))) {
+          error = "驱动控制的命令/状态话题须同时填写不同的完整绝对名称，或同时留空";
           return false;
         }
-        if (use_cloud && (cloud_topic.empty() || cloud_topic.front() != '/')) {
-          error = "topic_input.pointcloud_name 必须填写以 / 开头的 PointCloud2 话题名";
-          return false;
-        }
-        if (use_image && (topic == contract::kImageTopic ||
+        const bool request_image = std::find(signals_.begin(), signals_.end(), "rgb") != signals_.end();
+        const bool request_cloud = std::find(signals_.begin(), signals_.end(), "depth") != signals_.end();
+        if (request_image && (topic == contract::kImageTopic ||
           topic == contract::kStreamImageTopic || topic == contract::kCapturedImageTopic)) {
           error = "输入话题不能是本程序发布的图像话题，否则会循环接收";
           return false;
         }
-        if (use_cloud) {
-          if (cloud_topic == contract::kStreamCloudTopic) {
-            error = "点云输入不能是本程序发布的点云话题";
-            return false;
-          }
-          const auto topics = get_topic_names_and_types();
-          const auto found = topics.find(cloud_topic);
-          if (found == topics.end() || std::find(found->second.begin(), found->second.end(),
-            "sensor_msgs/msg/PointCloud2") == found->second.end()) {
-            error = "尚未发现 PointCloud2 话题 " + cloud_topic;
-            return false;
-          }
+        if (request_cloud && cloud_topic == contract::kStreamCloudTopic) {
+          error = "点云输入不能是本程序发布的点云话题";
+          return false;
         }
-        if (use_image && type == "auto") {
-          const auto topics = get_topic_names_and_types();
-          const auto found = topics.find(topic);
-          if (found == topics.end()) {
-            error = "尚未发现话题 " + topic + "；请先启动发布端并检查 ROS 网络发现";
-            return false;
-          }
-          if (std::find(found->second.begin(), found->second.end(),
-            "sensor_msgs/msg/CompressedImage") != found->second.end())
-          {
-            type = "compressed";
-          } else if (std::find(found->second.begin(), found->second.end(),
-            "sensor_msgs/msg/Image") != found->second.end())
-          {
-            type = "raw";
-          } else {
-            error = "话题 " + topic + " 不是 sensor_msgs/msg/Image 或 CompressedImage";
-            return false;
-          }
-        }
-        if (use_image && type != "raw" && type != "compressed") {
+        if (request_image && type != "auto" && type != "raw" && type != "compressed") {
           error = "topic_input.type 只能是 auto、raw 或 compressed";
           return false;
         }
+        const auto topics = get_topic_names_and_types();
+        const auto has_type = [&topics](const std::string & name, const char * message_type) {
+            const auto found = topics.find(name);
+            return found != topics.end() && std::find(found->second.begin(),
+              found->second.end(), message_type) != found->second.end();
+          };
+        bool use_image = request_image && !topic.empty() && topic.front() == '/';
+        bool use_cloud = request_cloud && !cloud_topic.empty() && cloud_topic.front() == '/';
+        if (use_image && type == "auto") {
+          if (has_type(topic, contract::extrinsic_input::kCompressedImageType)) {
+            type = "compressed";
+          } else if (has_type(topic, contract::extrinsic_input::kRawImageType)) {
+            type = "raw";
+          } else if (command_topic.empty()) {use_image = false;}
+        } else if (use_image) {
+          use_image = !command_topic.empty() || has_type(topic, type == "raw" ?
+            contract::extrinsic_input::kRawImageType :
+            contract::extrinsic_input::kCompressedImageType);
+        }
+        if (use_cloud) {
+          use_cloud = !command_topic.empty() ||
+            has_type(cloud_topic, contract::extrinsic_input::kCloudType);
+        }
+        if (!use_image && !use_cloud) {
+          error = "ROS 图像与点云均未配置或未发现可用发布端；至少需要一路有效话题";
+          return false;
+        }
+        if (request_image && !use_image) {
+          RCLCPP_WARN(get_logger(), "图像话题不可用，继续使用可用的点云话题");
+        }
+        if (request_cloud && !use_cloud) {
+          RCLCPP_WARN(get_logger(), "点云话题不可用，继续使用可用的图像话题");
+        }
+        signals_.clear();
+        if (use_image) {signals_.push_back("rgb");}
+        if (use_cloud) {signals_.push_back("depth");}
         {
           std::lock_guard<std::mutex> lock(frame_mutex_);
           latest_frame_.release();
@@ -525,8 +623,20 @@ private:
         }
         rclcpp::SubscriptionOptions options;
         options.callback_group = topic_callback_group_;
+        if (!command_topic.empty()) {
+          topic_control_pub_ = create_publisher<std_msgs::msg::Bool>(
+            command_topic, rclcpp::QoS(1).reliable());
+          topic_control_sub_ = create_subscription<std_msgs::msg::String>(
+            status_topic, rclcpp::QoS(1).reliable().transient_local(),
+            [this](std_msgs::msg::String::ConstSharedPtr message) {
+              std::lock_guard<std::mutex> lock(topic_control_mutex_);
+              topic_control_status_ = message->data;
+              ++topic_control_sequence_;
+              topic_control_cv_.notify_all();
+            }, options);
+        }
         const auto qos = rclcpp::SensorDataQoS().keep_last(1);
-        if (use_image && type == "compressed") {
+        if (use_image && (type == "compressed" || type == "auto")) {
           topic_compressed_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
             topic, qos,
             [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
@@ -534,7 +644,8 @@ private:
                 const_cast<uint8_t *>(message->data.data()));
               receiveTopicFrame(cv::imdecode(encoded, cv::IMREAD_UNCHANGED));
             }, options);
-        } else if (use_image) {
+        }
+        if (use_image && (type == "raw" || type == "auto")) {
           topic_raw_sub_ = create_subscription<sensor_msgs::msg::Image>(
             topic, qos,
             [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
@@ -801,11 +912,9 @@ private:
     std::lock_guard<std::mutex> lock(frame_mutex_);
     if (!topic_input_active_ || !streaming_) {return;}
     latest_cloud_ = std::move(points);
-    if (selection_.signal == "depth") {
-      topic_last_frame_time_ = std::chrono::steady_clock::now();
-      ++frame_sequence_;
-      frame_cv_.notify_all();
-    }
+    topic_last_frame_time_ = std::chrono::steady_clock::now();
+    ++frame_sequence_;
+    frame_cv_.notify_all();
   }
 
   void notifyHardwareDisconnected(const std::string & detail)
@@ -832,6 +941,8 @@ private:
     topic_raw_sub_.reset();
     topic_compressed_sub_.reset();
     topic_cloud_sub_.reset();
+    topic_control_sub_.reset();
+    topic_control_pub_.reset();
     capture_device_.release();
 #ifdef DANMUCAMERA_HAS_ORBBEC
     {
@@ -892,8 +1003,7 @@ private:
         bool timed_out = false;
         {
           std::lock_guard<std::mutex> lock(frame_mutex_);
-          timed_out = (selection_.signal == "depth" ? !latest_cloud_.empty() :
-            !latest_frame_.empty()) &&
+          timed_out = (!latest_frame_.empty() || !latest_cloud_.empty()) &&
             std::chrono::steady_clock::now() - topic_last_frame_time_ >= 3s;
         }
         if (timed_out) {
@@ -1295,6 +1405,12 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr topic_raw_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr topic_compressed_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr topic_cloud_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr topic_control_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr topic_control_sub_;
+  std::mutex topic_control_mutex_;
+  std::condition_variable topic_control_cv_;
+  std::string topic_control_status_;
+  uint64_t topic_control_sequence_{0};
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr stream_image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr stream_cloud_pub_;

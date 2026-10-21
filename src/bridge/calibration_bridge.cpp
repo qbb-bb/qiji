@@ -86,6 +86,10 @@ public:
     declare_parameter<double>("initial_cx", 0.0);
     declare_parameter<double>("initial_cy", 0.0);
     declare_parameter<std::vector<double>>("initial_distortion", std::vector<double>(8, 0.0));
+    // 只声明相机-雷达外参的附加输入；图像与点云来源由 calibration_camera
+    // 的 topic_input 参数决定。外参求解尚未启用，不创建这些订阅。
+    declare_parameter<std::string>(contract::extrinsic_input::kCameraInfoParameter, "");
+    declare_parameter<double>(contract::extrinsic_input::kMaxPairDeltaParameter, 50.0);
 
     // 图像质量阈值只来自 calibration.yaml。这里的 0/-1 是缺失配置哨兵，
     // 不作为实际运行默认值；配置缺失或非法时直接在启动阶段报错。
