@@ -13,6 +13,9 @@ if [[ ! -f "${install_setup}" ]]; then
   exit 1
 fi
 source "${install_setup}"
+# ROS/colcon setup files can re-add paths inherited when the workspace was built
+# inside a Snap editor. Clean once more after all setup scripts have run.
+source "${script_path%/*}/clean_snap_env.sh"
 cd "${package_root}"
 if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   echo "未检测到图形桌面会话；请在登录桌面后的终端运行。" >&2

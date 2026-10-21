@@ -8,6 +8,7 @@ source "${script_path%/*}/select_ros.sh"
 source "${script_path%/*}/clean_snap_env.sh"
 unset ROS_DISTRO
 source "/opt/ros/${QIJI_ROS_DISTRO}/setup.bash"
+source "${script_path%/*}/clean_snap_env.sh"
 cd "${package_root}"
 # CMake can retain a Snap runtime path from a previous build in its cache.
 cache="${package_root}/build/danmucamera/CMakeCache.txt"

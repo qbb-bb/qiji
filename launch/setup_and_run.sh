@@ -288,6 +288,7 @@ fi
 
 unset ROS_DISTRO
 source "/opt/ros/${ros_distro}/setup.bash"
+source "${script_path%/*}/clean_snap_env.sh"
 /usr/bin/python3 -c 'import catkin_pkg, ament_package, launch, launch_ros'
 "${package_root}/launch/build.sh"
 "${package_root}/launch/create_shortcut.sh"
