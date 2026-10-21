@@ -19,12 +19,6 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/forms)
 
-# 两个厂商 SDK 都是可选后端：安装后自动启用，缺失时仍可用 V4L2。
-find_package(realsense2 CONFIG QUIET)
-# CMake searches system prefixes and CMAKE_PREFIX_PATH, including a sourced ROS/SDK environment.
-find_path(ORBBEC_INCLUDE_DIR NAMES libobsensor/ObSensor.hpp)
-find_library(ORBBEC_LIBRARY NAMES OrbbecSDK)
-
 include_directories(
   src/algorithm
   src/bridge
@@ -41,25 +35,15 @@ target_link_libraries(board_detector ${OpenCV_LIBS})
 add_executable(calibration_solver src/algorithm/calibration_solver.cpp)
 target_link_libraries(calibration_solver board_detector ${OpenCV_LIBS})
 
-# I/O 层集中在一个实现中；阻塞相机读取在其内部工作线程运行。
+# 标定 I/O 仅订阅标准 ROS 话题，不访问相机硬件。
 add_executable(io_node src/bridge/io_node.cpp)
 target_link_libraries(io_node ${OpenCV_LIBS})
 ament_target_dependencies(io_node rclcpp sensor_msgs std_msgs std_srvs)
-if(realsense2_FOUND)
-  target_link_libraries(io_node realsense2::realsense2)
-  target_compile_definitions(io_node PRIVATE DANMUCAMERA_HAS_REALSENSE=1)
-  message(STATUS "RealSense SDK backend enabled")
-else()
-  message(WARNING "librealsense2-dev not found: RealSense backend disabled")
-endif()
-if(ORBBEC_INCLUDE_DIR AND ORBBEC_LIBRARY)
-  target_include_directories(io_node PRIVATE ${ORBBEC_INCLUDE_DIR})
-  target_link_libraries(io_node ${ORBBEC_LIBRARY})
-  target_compile_definitions(io_node PRIVATE DANMUCAMERA_HAS_ORBBEC=1)
-  message(STATUS "Orbbec SDK v2 backend enabled")
-else()
-  message(WARNING "Orbbec SDK v2 not found: Gemini backend disabled")
-endif()
+
+# 独立测试驱动：只有此进程打开 V4L2 或图片文件。
+add_executable(topic_camera_driver src/driver/topic_camera_driver.cpp)
+target_link_libraries(topic_camera_driver ${OpenCV_LIBS})
+ament_target_dependencies(topic_camera_driver rclcpp sensor_msgs std_msgs)
 
 # 图像质量纯算法模块：不依赖 ROS 2 / Qt，只负责质量计算和报警判断。
 add_library(image_quality_analyzer STATIC src/algorithm/image_quality_analyzer.cpp)
@@ -95,6 +79,7 @@ ament_target_dependencies(calibration_ui rclcpp rcl_interfaces sensor_msgs std_m
 install(TARGETS
   calibration_solver
   io_node
+  topic_camera_driver
   calibration_bridge
   calibration_ui
   DESTINATION lib/${PROJECT_NAME}

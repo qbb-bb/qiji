@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Add only missing dependencies, then build and launch in this process.
-# Existing package versions, shell startup files and user SDK settings stay intact.
+# Add only missing ROS, Qt, and OpenCV dependencies, then build and launch.
 set -eo pipefail
 
 script_path="${BASH_SOURCE[0]}"
@@ -8,15 +7,12 @@ script_path="${BASH_SOURCE[0]}"
 package_root="$(cd "${script_path%/*}/.." && pwd)"
 
 check_only=false
-camera_mode=auto
 requested_ros=auto
 while (( $# )); do
   case "$1" in
     --check) check_only=true ;;
     --ros=auto|--ros=humble|--ros=jazzy) requested_ros="${1#--ros=}" ;;
-    --camera=auto|--camera=orbbec|--camera=realsense|--camera=all|--camera=none)
-      camera_mode="${1#--camera=}" ;;
-    *) echo "未知参数：$1（支持 --check、--ros=auto|humble|jazzy、--camera=auto|orbbec|realsense|all|none）" >&2; exit 2 ;;
+    *) echo "未知参数：$1（支持 --check、--ros=auto|humble|jazzy）" >&2; exit 2 ;;
   esac
   shift
 done
@@ -119,54 +115,11 @@ install_missing() {
   sudo apt-get --no-upgrade --no-remove -y install "${missing[@]}"
 }
 
-has_orbbec_sdk() {
-  local prefix libdir
-  local prefixes=("/opt/ros/${ros_distro}" /usr/local /usr)
-  if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
-    IFS=: read -r -a extra_prefixes <<< "${CMAKE_PREFIX_PATH}"
-    prefixes+=("${extra_prefixes[@]}")
-  fi
-  for prefix in "${prefixes[@]}"; do
-    [[ -f "${prefix}/include/libobsensor/ObSensor.hpp" ]] || continue
-    for libdir in "${prefix}/lib" "${prefix}/lib64" "${prefix}/lib/$(gcc -dumpmachine 2>/dev/null || true)"; do
-      [[ -e "${libdir}/libOrbbecSDK.so" ]] && return 0
-    done
-  done
-  return 1
-}
-has_realsense_sdk() {
-  is_installed librealsense2-dev || {
-    [[ -f /usr/include/librealsense2/rs.hpp || -f /usr/local/include/librealsense2/rs.hpp ]] &&
-      ldconfig -p 2>/dev/null | grep -q 'librealsense2.so'
-  }
-}
-
-orbbec_detected=false
-realsense_detected=false
-for vendor_file in /sys/bus/usb/devices/*/idVendor; do
-  [[ -f "${vendor_file}" ]] || continue
-  read -r vendor < "${vendor_file}" || continue
-  case "${vendor,,}" in
-    2bc5) orbbec_detected=true ;;
-    8086)
-      product_file="${vendor_file%/*}/product"
-      if [[ -r "${product_file}" ]]; then
-        read -r product < "${product_file}" || true
-        [[ "${product,,}" == *realsense* ]] && realsense_detected=true
-      fi ;;
-  esac
-done
-case "${camera_mode}" in
-  orbbec) orbbec_detected=true ;;
-  realsense) realsense_detected=true ;;
-  all) orbbec_detected=true; realsense_detected=true ;;
-  none) orbbec_detected=false; realsense_detected=false ;;
-esac
 if [[ "${ros_existing}" == true ]]; then ros_status=现有; else ros_status=待安装; fi
-echo "系统：${PRETTY_NAME}；ROS 2：${ros_distro}（${ros_status}）；Orbbec：${orbbec_detected}；RealSense：${realsense_detected}"
+echo "系统：${PRETTY_NAME}；ROS 2：${ros_distro}（${ros_status}）"
 
 packages=(build-essential cmake python3-colcon-common-extensions
-  qt6-base-dev qt6-qpa-plugins libopencv-dev libopencv-contrib-dev v4l-utils)
+  qt6-base-dev qt6-qpa-plugins libopencv-dev libopencv-contrib-dev)
 if [[ "${ros_existing}" == false ]] || is_installed "ros-${ros_distro}-ros-base" || is_installed "ros-${ros_distro}-rclcpp"; then
   packages+=("ros-${ros_distro}-ros-base" "ros-${ros_distro}-ament-cmake"
     "ros-${ros_distro}-rclcpp" "ros-${ros_distro}-rcl-interfaces"
@@ -181,8 +134,6 @@ fi
 
 if [[ "${check_only}" == true ]]; then
   install_missing "${packages[@]}"
-  if [[ "${orbbec_detected}" == true ]] && ! has_orbbec_sdk; then echo "缺少 Orbbec SDK v2"; fi
-  if [[ "${realsense_detected}" == true ]] && ! has_realsense_sdk; then echo "缺少 librealsense2 开发包"; fi
   echo "检查完成；没有安装软件、编译或启动。"
   exit 0
 fi
@@ -222,69 +173,6 @@ if ! apt_has qt6-base-dev || ! apt_has libopencv-contrib-dev; then
 fi
 install_missing "${packages[@]}"
 
-if [[ "${orbbec_detected}" == true ]] && ! has_orbbec_sdk; then
-  install_missing "ros-${ros_distro}-orbbec-camera"
-fi
-if [[ "${orbbec_detected}" == true ]]; then
-  rule_source="/opt/ros/${ros_distro}/share/orbbec_camera/udev/99-obsensor-libusb.rules"
-  rule_target=/etc/udev/rules.d/99-obsensor-libusb.rules
-  if [[ ! -e "${rule_target}" && ! -e /usr/lib/udev/rules.d/99-obsensor-libusb.rules ]]; then
-    downloaded_rule=false
-    if [[ ! -f "${rule_source}" ]]; then
-      install_missing curl ca-certificates
-      rule_source="$(mktemp)"
-      downloaded_rule=true
-      trap 'rm -f -- "${rule_source}"' EXIT
-      curl -fsSL -o "${rule_source}" https://raw.githubusercontent.com/orbbec/OrbbecSDK_ROS2/v2-main/orbbec_camera/udev/99-obsensor-libusb.rules
-    fi
-    sudo install -m 0644 "${rule_source}" "${rule_target}"
-    if [[ "${downloaded_rule}" == true ]]; then
-      rm -f -- "${rule_source}"
-      trap - EXIT
-    fi
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2bc5 || echo "请重新插拔 Orbbec 相机以加载新权限规则。"
-  fi
-fi
-
-if [[ "${realsense_detected}" == true ]] && ! has_realsense_sdk; then
-  if ! apt_has librealsense2-dev; then
-    refresh_apt
-  fi
-  if ! apt_has librealsense2-dev; then
-    if [[ -e /etc/apt/sources.list.d/librealsense.list ]]; then
-      echo "已有 RealSense 软件源配置，但找不到 librealsense2-dev；未改动现有配置。" >&2
-      exit 1
-    fi
-    install_missing curl ca-certificates gnupg
-    temp_dir="$(mktemp -d)"
-    trap 'rm -rf -- "${temp_dir}"' EXIT
-    curl -fsSL -o "${temp_dir}/realsense.asc" https://librealsense.realsenseai.com/Debian/librealsenseai.asc
-    gpg --dearmor --output "${temp_dir}/librealsenseai.gpg" "${temp_dir}/realsense.asc"
-    sudo install -d -m 0755 /etc/apt/keyrings
-    if [[ ! -e /etc/apt/keyrings/librealsenseai.gpg ]]; then
-      sudo install -m 0644 "${temp_dir}/librealsenseai.gpg" /etc/apt/keyrings/librealsenseai.gpg
-    fi
-    printf 'deb [signed-by=/etc/apt/keyrings/librealsenseai.gpg] https://librealsense.realsenseai.com/Debian/apt-repo %s main\n' "${ubuntu_codename}" |
-      sudo tee /etc/apt/sources.list.d/librealsense.list >/dev/null
-    sudo apt-get update
-    rm -rf -- "${temp_dir}"
-    trap - EXIT
-    apt_refreshed=true
-  fi
-  install_missing librealsense2-dev librealsense2-udev-rules
-fi
-if [[ "${realsense_detected}" == true && ! -e /etc/udev/rules.d/99-realsense-libusb.rules && ! -e /usr/lib/udev/rules.d/99-realsense-libusb.rules ]]; then
-  install_missing curl ca-certificates
-  rule_source="$(mktemp)"
-  trap 'rm -f -- "${rule_source}"' EXIT
-  curl -fsSL -o "${rule_source}" https://raw.githubusercontent.com/realsenseai/librealsense/master/config/99-realsense-libusb.rules
-  sudo install -m 0644 "${rule_source}" /etc/udev/rules.d/99-realsense-libusb.rules
-  rm -f -- "${rule_source}"
-  trap - EXIT
-  sudo udevadm control --reload-rules
-  sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=8086 || echo "请重新插拔 RealSense 相机以加载新权限规则。"
-fi
 
 unset ROS_DISTRO
 source "/opt/ros/${ros_distro}/setup.bash"

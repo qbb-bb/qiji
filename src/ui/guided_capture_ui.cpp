@@ -122,7 +122,7 @@ void CalibrationWindow::startGuidedCapture()
   calibration_status_->setText(GuidedCapturePlan::instruction(0));
   if (!camera_streaming_) {
     guided_start_pending_ = true;
-    guided_status_label_->setText(QStringLiteral("正在启动相机…"));
+    guided_status_label_->setText(QStringLiteral("正在等待图像话题…"));
     calibration_start_stop_button_->click();
     return;
   }

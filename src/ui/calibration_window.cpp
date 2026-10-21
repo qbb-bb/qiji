@@ -19,6 +19,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QVBoxLayout>
 #include <QDialog>
 #include <QDir>
@@ -64,6 +65,18 @@ constexpr int kQualityWarningRole = Qt::UserRole + 6;
 constexpr int kQualityOverrideRole = Qt::UserRole + 7;
 volatile std::sig_atomic_t g_activate_window_requested = 0;
 
+QString selectedTopic(const QComboBox & combo)
+{
+  return combo.currentData().toString().trimmed();
+}
+
+QSize imageSize(const QString & path)
+{
+  QImageReader reader(path);
+  const QSize size = reader.size();
+  return size.isValid() ? size : reader.read().size();
+}
+
 QString qualityProblemText(const danmucamera::ImageQualityMetrics & quality)
 {
   QStringList problems;
@@ -82,29 +95,6 @@ void requestWindowActivation(int)
   g_activate_window_requested = 1;
 }
 
-bool cameraUsbPresent(const QString & device_id)
-{
-  const QStringList fields = device_id.split(':');
-  const QString backend = fields.value(0);
-  if (backend == QStringLiteral("v4l2")) {
-    return QFileInfo::exists(fields.value(1));
-  }
-  const QByteArray expected_vendor = backend == QStringLiteral("orbbec") ? "2bc5" :
-    backend == QStringLiteral("realsense") ? "8086" : QByteArray();
-  if (expected_vendor.isEmpty()) {return true;}
-
-  const QDir usb_devices(QStringLiteral("/sys/bus/usb/devices"));
-  for (const QString & entry : usb_devices.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-    QFile vendor_file(usb_devices.filePath(entry + QStringLiteral("/idVendor")));
-    if (vendor_file.open(QIODevice::ReadOnly) &&
-      vendor_file.readAll().trimmed().toLower() == expected_vendor)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
 }  // namespace
 
 namespace danmucamera
@@ -119,19 +109,8 @@ CalibrationWindow::CalibrationWindow(CalibrationRosClient & transport)
     if (!transport_.spinSome()) {QApplication::quit();}
   });
   transport_timer_->start(100);
-  device_presence_timer_ = new QTimer(this);
-  connect(device_presence_timer_, &QTimer::timeout, this, [this]() {
-    // 只读 sysfs，不调用厂商 SDK，不与启动/停止请求争用 ROS executor。
-    if (camera_connected_ && !connected_device_id_.isEmpty() &&
-      !cameraUsbPresent(connected_device_id_))
-    {
-      handleCameraDisconnected(QStringLiteral(
-        "USB 总线中已找不到当前相机，已立即恢复为未连接状态"));
-    }
-  });
-  device_presence_timer_->start(250);
   QTimer::singleShot(600, this, [this]() {
-    transport_.refreshDevices();
+    transport_.refreshTopics();
     transport_.refreshTopicInputs();
     transport_.refreshExtrinsicInput();
   });
@@ -161,20 +140,31 @@ void CalibrationWindow::buildUi()
   calibration_page_ = ui_->calibration_page;
   calibration_page_->setFocusPolicy(Qt::StrongFocus);
   camera_combo_ = ui_->camera_combo;
+  camera_combo_->hide();
   stream_button_ = new QToolButton(home_page_);
   stream_button_->setText(QStringLiteral("信息流 ▾"));
-  stream_button_->setToolTip(QStringLiteral("勾选同一相机要显示的信息流，可同时选择多路"));
+  stream_button_->setToolTip(QStringLiteral("勾选要显示的图像和点云，可同时选择两路"));
   stream_button_->setPopupMode(QToolButton::InstantPopup);
   stream_button_->setMenu(new QMenu(stream_button_));
   ui_->deviceActions->insertWidget(
     ui_->deviceActions->indexOf(ui_->start_stop_button) + 1, stream_button_);
-  camera_combo_->setToolTip(QStringLiteral("选择物理相机；RGB、红外和深度流在右侧“信息流”中勾选"));
+  camera_combo_->addItem(QStringLiteral("ROS Topics"),
+    QStringLiteral("ros-topic:configured:rgb"));
+  camera_combo_->setItemData(0, true, Qt::UserRole + 1);
+  camera_combo_->setItemData(0, QStringLiteral("rgb"), Qt::UserRole + 2);
+  camera_combo_->setItemData(0, QStringLiteral("ros-topic"), Qt::UserRole + 3);
+  selected_backend_name_ = QStringLiteral("ros-topic");
+  selected_signal_name_ = QStringLiteral("rgb");
+  selected_signal_calibratable_ = true;
   resolution_combo_ = ui_->resolution_combo;
   calibration_type_combo_ = ui_->calibration_type_combo;
   disable_emitter_checkbox_ = ui_->disable_emitter_checkbox;
+  disable_emitter_checkbox_->hide();
   refresh_button_ = ui_->refresh_button;
+  refresh_button_->setText(QStringLiteral("刷新 ROS 话题"));
   connect_button_ = ui_->connect_button;
   start_stop_button_ = ui_->start_stop_button;
+  start_stop_button_->setText(QStringLiteral("开始接收"));
   calibration_start_stop_button_ = ui_->calibration_start_stop_button;
   disconnect_button_ = ui_->disconnect_button;
   home_capture_button_ = ui_->home_capture_button;
@@ -197,22 +187,22 @@ void CalibrationWindow::buildUi()
   auto * topic_layout = new QHBoxLayout();
   topic_root->addLayout(topic_layout);
   topic_layout->addWidget(new QLabel(QStringLiteral("图像话题"), topic_inputs_panel_));
-  image_topic_edit_ = new QLineEdit(topic_inputs_panel_);
-  image_topic_edit_->setPlaceholderText(QStringLiteral("/camera/image_raw"));
+  image_topic_edit_ = new QComboBox(topic_inputs_panel_);
+  image_topic_edit_->addItem(QStringLiteral("无图像话题"), QString());
   topic_layout->addWidget(image_topic_edit_, 1);
   topic_layout->addWidget(new QLabel(QStringLiteral("点云话题"), topic_inputs_panel_));
-  cloud_topic_edit_ = new QLineEdit(topic_inputs_panel_);
-  cloud_topic_edit_->setPlaceholderText(QStringLiteral("/camera/points"));
+  cloud_topic_edit_ = new QComboBox(topic_inputs_panel_);
+  cloud_topic_edit_->addItem(QStringLiteral("无点云话题"), QString());
   topic_layout->addWidget(cloud_topic_edit_, 1);
   auto * control_layout = new QHBoxLayout();
   topic_root->addLayout(control_layout);
   control_layout->addWidget(new QLabel(QStringLiteral("驱动启停（可选）· 命令"), topic_inputs_panel_));
-  topic_control_command_edit_ = new QLineEdit(topic_inputs_panel_);
-  topic_control_command_edit_->setPlaceholderText(QStringLiteral("/driver/stream_command"));
+  topic_control_command_edit_ = new QComboBox(topic_inputs_panel_);
+  topic_control_command_edit_->addItem(QStringLiteral("不控制驱动"), QString());
   control_layout->addWidget(topic_control_command_edit_, 1);
   control_layout->addWidget(new QLabel(QStringLiteral("状态"), topic_inputs_panel_));
-  topic_control_status_edit_ = new QLineEdit(topic_inputs_panel_);
-  topic_control_status_edit_->setPlaceholderText(QStringLiteral("/driver/stream_status"));
+  topic_control_status_edit_ = new QComboBox(topic_inputs_panel_);
+  topic_control_status_edit_->addItem(QStringLiteral("不读取状态"), QString());
   control_layout->addWidget(topic_control_status_edit_, 1);
   apply_topic_inputs_button_ = new QPushButton(QStringLiteral("应用话题"), topic_inputs_panel_);
   apply_topic_inputs_button_->setToolTip(QStringLiteral(
@@ -220,7 +210,7 @@ void CalibrationWindow::buildUi()
   apply_topic_inputs_button_->setEnabled(false);
   control_layout->addWidget(apply_topic_inputs_button_);
   ui_->cameraControls->insertWidget(1, topic_inputs_panel_);
-  topic_inputs_panel_->hide();
+  topic_inputs_panel_->show();
   extrinsic_input_panel_ = new QGroupBox(QStringLiteral("相机与雷达外参 · Topic 输入"), home_page_);
   auto * extrinsic_layout = new QFormLayout(extrinsic_input_panel_);
   extrinsic_layout->setContentsMargins(10, 7, 10, 7);
@@ -228,8 +218,8 @@ void CalibrationWindow::buildUi()
   extrinsic_source_label_ = new QLabel(extrinsic_input_panel_);
   extrinsic_source_label_->setWordWrap(true);
   extrinsic_layout->addRow(QStringLiteral("当前流"), extrinsic_source_label_);
-  extrinsic_camera_info_edit_ = new QLineEdit(extrinsic_input_panel_);
-  extrinsic_camera_info_edit_->setPlaceholderText(QStringLiteral("/camera/color/camera_info"));
+  extrinsic_camera_info_edit_ = new QComboBox(extrinsic_input_panel_);
+  extrinsic_camera_info_edit_->addItem(QStringLiteral("无 CameraInfo 话题"), QString());
   extrinsic_layout->addRow(QStringLiteral("相机 CameraInfo"), extrinsic_camera_info_edit_);
   auto * pair_row = new QWidget(extrinsic_input_panel_);
   auto * pair_layout = new QHBoxLayout(pair_row);
@@ -459,6 +449,10 @@ void CalibrationWindow::buildSettingsUi()
   connect(resolution_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
     [this](int) {
       const QSize size = resolution_combo_->currentData().toSize();
+      if (size.isValid() && !camera_connected_ && !session_image_size_.isValid()) {
+        active_width_ = size.width();
+        active_height_ = size.height();
+      }
       if (size.isValid() && !guide_use_initial_checkbox_->isChecked()) {
         guide_initial_width_spin_->setValue(size.width());
         guide_initial_height_spin_->setValue(size.height());
@@ -589,16 +583,16 @@ void CalibrationWindow::rebuildStreamMenu()
   const bool is_ros = selected_backend_name_ == QStringLiteral("ros-topic");
   const bool preserve_checked = is_ros && camera_connected_ &&
     ((previous_checked.contains(QStringLiteral("rgb")) &&
-    !image_topic_edit_->text().trimmed().isEmpty()) ||
+    !selectedTopic(*image_topic_edit_).isEmpty()) ||
     (previous_checked.contains(QStringLiteral("depth")) &&
-    !cloud_topic_edit_->text().trimmed().isEmpty()));
+    !selectedTopic(*cloud_topic_edit_).isEmpty()));
   bool checked_any = false;
-  for (const auto & device : available_devices_) {
+  for (const auto & device : available_streams_) {
     if (!device.path.startsWith(prefix) || prefix.isEmpty()) {continue;}
     if (is_ros && ((device.signal == QStringLiteral("rgb") &&
-      image_topic_edit_->text().trimmed().isEmpty()) ||
+      selectedTopic(*image_topic_edit_).isEmpty()) ||
       (device.signal == QStringLiteral("depth") &&
-      cloud_topic_edit_->text().trimmed().isEmpty()))) {continue;}
+      selectedTopic(*cloud_topic_edit_).isEmpty()))) {continue;}
     auto * option = new QCheckBox(device.signal == QStringLiteral("rgb") ?
       QStringLiteral("RGB 彩色") : device.signal == QStringLiteral("depth") ?
       (is_ros ? QStringLiteral("3D 点云") : QStringLiteral("深度")) :
@@ -642,6 +636,22 @@ QStringList CalibrationWindow::checkedStreams() const
     }
   }
   return result;
+}
+
+bool CalibrationWindow::canConnectTopics() const
+{
+  const QString image = selectedTopic(*image_topic_edit_);
+  const QString cloud = selectedTopic(*cloud_topic_edit_);
+  const QString command = selectedTopic(*topic_control_command_edit_);
+  const QString status = selectedTopic(*topic_control_status_edit_);
+  if (image.isEmpty() && cloud.isEmpty()) {return false;}
+  if ((!image.isEmpty() && image_topic_edit_->findData(image) < 1) ||
+    (!cloud.isEmpty() && cloud_topic_edit_->findData(cloud) < 1)) {return false;}
+  if (command.isEmpty() != status.isEmpty()) {return false;}
+  if (!command.isEmpty() && command == status) {return false;}
+  const auto streams = checkedStreams();
+  return (streams.contains(QStringLiteral("rgb")) && !image.isEmpty()) ||
+    (streams.contains(QStringLiteral("depth")) && !cloud.isEmpty());
 }
 
 void CalibrationWindow::applySelectedStreams()
@@ -728,11 +738,10 @@ void CalibrationWindow::applySelectedStreams()
     stream_reconfigure_pending_ = false;
     connected_device_id_ = new_id;
     active_streams_ = requested;
-    transport_.connectCamera(new_id, active_width_, active_height_,
-      disable_emitter_checkbox_->isChecked(), requested,
-      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
-      topic_control_command_edit_->text().trimmed(),
-      topic_control_status_edit_->text().trimmed());
+    transport_.connectCamera(active_width_, active_height_,
+        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+      selectedTopic(*topic_control_command_edit_),
+      selectedTopic(*topic_control_status_edit_));
   }
 }
 
@@ -740,10 +749,9 @@ void CalibrationWindow::updateTopicInputsVisibility()
 {
   const bool is_ros = selected_backend_name_ == QStringLiteral("ros-topic");
   topic_inputs_panel_->setVisible(is_ros);
-  resolution_combo_->setEnabled(!camera_connected_ && !is_ros);
+  resolution_combo_->setEnabled(!camera_connected_);
   if (!camera_connected_) {
-    connect_button_->setEnabled(camera_combo_->count() > 0 &&
-      (!is_ros || !checkedStreams().isEmpty()));
+    connect_button_->setEnabled(!camera_operation_pending_ && canConnectTopics());
   }
   updateExtrinsicInputPanel();
 }
@@ -757,9 +765,9 @@ void CalibrationWindow::updateExtrinsicInputPanel()
   const bool ros_source = selected_backend_name_ == QStringLiteral("ros-topic");
   const bool paired = checkedStreams().contains(QStringLiteral("rgb")) &&
     checkedStreams().contains(QStringLiteral("depth"));
-  const QString image = image_topic_edit_->text().trimmed();
-  const QString cloud = cloud_topic_edit_->text().trimmed();
-  const QString info = extrinsic_camera_info_edit_->text().trimmed();
+  const QString image = selectedTopic(*image_topic_edit_);
+  const QString cloud = selectedTopic(*cloud_topic_edit_);
+  const QString info = selectedTopic(*extrinsic_camera_info_edit_);
   extrinsic_source_label_->setText(ros_source ?
     QStringLiteral("图像 %1  ·  点云 %2（沿用上方话题与勾选的信息流）")
       .arg(image.isEmpty() ? QStringLiteral("未填写") : image,
@@ -777,10 +785,10 @@ void CalibrationWindow::buildHomePage()
       if (!camera_connected_) {updateTopicInputsVisibility();}
     }
     if (camera_connected_) {topic_inputs_dirty_ = true;}
-    const QString image = image_topic_edit_->text().trimmed();
-    const QString cloud = cloud_topic_edit_->text().trimmed();
-    const QString command = topic_control_command_edit_->text().trimmed();
-    const QString status = topic_control_status_edit_->text().trimmed();
+    const QString image = selectedTopic(*image_topic_edit_);
+    const QString cloud = selectedTopic(*cloud_topic_edit_);
+    const QString command = selectedTopic(*topic_control_command_edit_);
+    const QString status = selectedTopic(*topic_control_status_edit_);
     const bool valid = (!image.isEmpty() || !cloud.isEmpty()) &&
       (image.isEmpty() || image.startsWith('/')) &&
       (cloud.isEmpty() || cloud.startsWith('/')) &&
@@ -791,10 +799,14 @@ void CalibrationWindow::buildHomePage()
       !camera_operation_pending_ && valid && !checkedStreams().isEmpty());
     updateExtrinsicInputPanel();
   };
-  connect(image_topic_edit_, &QLineEdit::textChanged, this, topic_changed);
-  connect(cloud_topic_edit_, &QLineEdit::textChanged, this, topic_changed);
-  connect(topic_control_command_edit_, &QLineEdit::textChanged, this, topic_changed);
-  connect(topic_control_status_edit_, &QLineEdit::textChanged, this, topic_changed);
+  for (auto * combo : {image_topic_edit_, cloud_topic_edit_,
+    topic_control_command_edit_, topic_control_status_edit_}) {
+    connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+      [this, topic_changed](int) {
+        topic_selection_touched_ = true;
+        topic_changed(QString());
+      });
+  }
   connect(apply_topic_inputs_button_, &QPushButton::clicked, this, [this]() {
     if (!apply_topic_inputs_button_->isEnabled() || camera_operation_pending_) {return;}
     if (sample_list_->count() > 0 || calibration_view_ == CalibrationView::Result) {
@@ -831,28 +843,25 @@ void CalibrationWindow::buildHomePage()
       connected_device_id_ = base_id.left(base_id.lastIndexOf(':') + 1) +
         selected_signal_name_;
       active_streams_ = checkedStreams();
-      transport_.connectCamera(connected_device_id_, active_width_, active_height_,
-        disable_emitter_checkbox_->isChecked(), active_streams_,
-        image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
-        topic_control_command_edit_->text().trimmed(),
-        topic_control_status_edit_->text().trimmed());
+      transport_.connectCamera(active_width_, active_height_,
+        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*topic_control_command_edit_),
+        selectedTopic(*topic_control_status_edit_));
     }
   });
-  connect(extrinsic_camera_info_edit_, &QLineEdit::textChanged, this,
-    [this](const QString &) {updateExtrinsicInputPanel();});
+  connect(extrinsic_camera_info_edit_, qOverload<int>(&QComboBox::currentIndexChanged),
+    this, [this](int) {updateExtrinsicInputPanel();});
   connect(apply_extrinsic_input_button_, &QPushButton::clicked, this, [this]() {
     if (!apply_extrinsic_input_button_->isEnabled()) {return;}
     apply_extrinsic_input_button_->setEnabled(false);
-    transport_.setExtrinsicInput(extrinsic_camera_info_edit_->text().trimmed(),
+    transport_.setExtrinsicInput(selectedTopic(*extrinsic_camera_info_edit_),
       extrinsic_pair_delta_spin_->value());
   });
   connect(camera_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
     selected_signal_calibratable_ = camera_combo_->itemData(index, Qt::UserRole + 1).toBool();
     selected_signal_name_ = camera_combo_->itemData(index, Qt::UserRole + 2).toString();
     selected_backend_name_ = camera_combo_->itemData(index, Qt::UserRole + 3).toString();
-    disable_emitter_checkbox_->setEnabled(
-      selected_backend_name_ == QStringLiteral("orbbec") ||
-      selected_backend_name_ == QStringLiteral("realsense"));
+    disable_emitter_checkbox_->setEnabled(false);
     rebuildStreamMenu();
     updateTopicInputsVisibility();
     updateCalibrationAvailability();
@@ -876,9 +885,14 @@ void CalibrationWindow::buildHomePage()
 
   connect(refresh_button_, &QPushButton::clicked, this, [this]() {
     refresh_button_->setEnabled(false);
-    transport_.refreshDevices();
+    transport_.refreshTopics();
   });
   connect(connect_button_, &QPushButton::clicked, this, [this]() {
+    if (camera_operation_pending_ || !canConnectTopics()) {
+      connect_button_->setEnabled(false);
+      signal_notice_->setText(QStringLiteral("至少选择一路当前可发现的图像或点云话题后才能连接。"));
+      return;
+    }
     camera_operation_pending_ = true;
     connect_button_->setEnabled(false);
     const QString base_id = camera_combo_->currentData().toString();
@@ -887,12 +901,10 @@ void CalibrationWindow::buildHomePage()
     const QSize resolution = resolution_combo_->currentData().toSize();
     active_width_ = resolution.width();
     active_height_ = resolution.height();
-    transport_.connectCamera(
-      connected_device_id_, active_width_, active_height_,
-      disable_emitter_checkbox_->isChecked(), active_streams_,
-      image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
-      topic_control_command_edit_->text().trimmed(),
-      topic_control_status_edit_->text().trimmed());
+    transport_.connectCamera(active_width_, active_height_,
+        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+      selectedTopic(*topic_control_command_edit_),
+      selectedTopic(*topic_control_status_edit_));
   });
   connect(disconnect_button_, &QPushButton::clicked, this, [this]() {
     camera_operation_pending_ = true;
@@ -966,6 +978,13 @@ void CalibrationWindow::buildHomePage()
       startNewCalibrationSession();
     }
     pages_->setCurrentWidget(calibration_page_);
+    updateCalibrationModeUi();
+    if (!camera_connected_) {
+      resolution_notice_->setText(session_image_size_.isValid() ? QStringLiteral(
+        "离线标定分辨率：%1 × %2（本次会话已锁定）")
+        .arg(session_image_size_.width()).arg(session_image_size_.height()) :
+        QStringLiteral("离线标定：导入图片时按首张可读取图片确定分辨率。"));
+    }
   });
 }
 
@@ -1009,6 +1028,21 @@ void CalibrationWindow::buildCalibrationPage()
       QStringLiteral("图像文件 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff "
         "*.JPG *.JPEG *.PNG *.BMP *.TIF *.TIFF);;所有文件 (*)"));
     if (paths.isEmpty()) {return;}
+    if (!camera_streaming_) {
+      if (!session_image_size_.isValid()) {
+        for (const QString & path : paths) {
+          session_image_size_ = imageSize(path);
+          if (session_image_size_.isValid()) {break;}
+        }
+      }
+      if (session_image_size_.isValid()) {
+        active_width_ = session_image_size_.width();
+        active_height_ = session_image_size_.height();
+        resolution_notice_->setText(QStringLiteral(
+          "图片标定分辨率：%1 × %2（本次会话已锁定；其他分辨率会被拒绝）")
+          .arg(active_width_).arg(active_height_));
+      }
+    }
     manual_capture_preview_pending_ = false;
     updateCornerCoverage();
     chooser_settings.setValue(QStringLiteral("lastImportDirectory"),
@@ -1041,10 +1075,8 @@ void CalibrationWindow::buildCalibrationPage()
   });
   connect(run_button_, &QPushButton::clicked, this, [this]() {
     if (!validateSettings()) {return;}
-    run_button_->setEnabled(false);
-    calibration_requested_ = true;
-    calibration_status_->setText(QStringLiteral("正在标定，请稍候…"));
     QStringList session_samples;
+    QSize expected = session_image_size_;
     for (int row = 0; row < sample_list_->count(); ++row) {
       auto * item = sample_list_->item(row);
       const QVariant validity = item->data(kSampleValidRole);
@@ -1053,9 +1085,20 @@ void CalibrationWindow::buildCalibrationPage()
         item->data(kQualityOverrideRole).toBool();
       if ((!validity.isValid() || validity.toBool()) && quality_ok &&
         !quality_cache_.value(path).board_size_warning) {
+        const QSize actual = imageSize(path);
+        if (!actual.isValid() || (expected.isValid() && actual != expected)) {
+          QMessageBox::warning(this, QStringLiteral("标定分辨率不一致"),
+            QStringLiteral("样本 %1 的分辨率与本次会话不一致，请删除后再标定。")
+              .arg(QFileInfo(path).fileName()));
+          return;
+        }
+        if (!expected.isValid()) {expected = actual;}
         session_samples.push_back(path);
       }
     }
+    run_button_->setEnabled(false);
+    calibration_requested_ = true;
+    calibration_status_->setText(QStringLiteral("正在标定，请稍候…"));
     transport_.runCalibration(session_samples, currentSettings());
   });
   connect(sample_list_, &QListWidget::currentRowChanged, this, [this]() {selectSample();});
@@ -1172,15 +1215,45 @@ void CalibrationWindow::bindTransport()
     if (camera_streaming_ && cloud_panel_->isVisible()) {cloud_view_->setPoints(points);}
   };
   transport_.onTopicDefaults = [this](const QString & image, const QString & cloud) {
-    if (!image_topic_edit_->isModified()) {image_topic_edit_->setText(image);}
-    if (!cloud_topic_edit_->isModified()) {cloud_topic_edit_->setText(cloud);}
+    default_image_topic_ = image;
+    default_cloud_topic_ = cloud;
+    if (!topic_selection_touched_) {
+      const QSignalBlocker image_blocker(image_topic_edit_);
+      const QSignalBlocker cloud_blocker(cloud_topic_edit_);
+      const int image_row = image_topic_edit_->findData(image);
+      const int cloud_row = cloud_topic_edit_->findData(cloud);
+      if (image_row >= 0 && !image.isEmpty()) {image_topic_edit_->setCurrentIndex(image_row);}
+      if (cloud_row >= 0 && !cloud.isEmpty()) {cloud_topic_edit_->setCurrentIndex(cloud_row);}
+      if (!camera_connected_) {
+        rebuildStreamMenu();
+        updateTopicInputsVisibility();
+        updateCalibrationAvailability();
+      }
+    }
   };
   transport_.onTopicControlDefaults = [this](const QString & command, const QString & status) {
-    if (!topic_control_command_edit_->isModified()) {topic_control_command_edit_->setText(command);}
-    if (!topic_control_status_edit_->isModified()) {topic_control_status_edit_->setText(status);}
+    default_command_topic_ = command;
+    default_status_topic_ = status;
+    if (!topic_selection_touched_) {
+      const QSignalBlocker command_blocker(topic_control_command_edit_);
+      const QSignalBlocker status_blocker(topic_control_status_edit_);
+      const int command_row = topic_control_command_edit_->findData(command);
+      const int status_row = topic_control_status_edit_->findData(status);
+      if (command_row >= 0 && !command.isEmpty()) {
+        topic_control_command_edit_->setCurrentIndex(command_row);
+      }
+      if (status_row >= 0 && !status.isEmpty()) {
+        topic_control_status_edit_->setCurrentIndex(status_row);
+      }
+      updateTopicInputsVisibility();
+    }
   };
   transport_.onExtrinsicInput = [this](const QString & info, double max_delta) {
-    if (!extrinsic_camera_info_edit_->isModified()) {extrinsic_camera_info_edit_->setText(info);}
+    default_camera_info_topic_ = info;
+    const int row = extrinsic_camera_info_edit_->findData(info);
+    if (row > 0 && selectedTopic(*extrinsic_camera_info_edit_).isEmpty()) {
+      extrinsic_camera_info_edit_->setCurrentIndex(row);
+    }
     if (!extrinsic_pair_delta_spin_->hasFocus()) {extrinsic_pair_delta_spin_->setValue(max_delta);}
     updateExtrinsicInputPanel();
   };
@@ -1341,59 +1414,58 @@ void CalibrationWindow::bindTransport()
       showImage(undistorted_view_, image);
     }
   };
-  transport_.onDevices = [this](const std::vector<UiCameraDevice> & devices) {
-    if (camera_connected_) {
-      const bool still_present = std::any_of(
-        devices.cbegin(), devices.cend(), [this](const UiCameraDevice & device) {
-          return device.path == connected_device_id_;
-        });
-      if (!still_present) {
-        handleCameraDisconnected(QStringLiteral(
-          "设备枚举中已找不到当前相机，已恢复为未连接状态"));
+  transport_.onTopics = [this](const std::vector<UiTopicSource> & topics) {
+    const auto fill = [this, &topics](QComboBox * combo, const QString & role,
+      const QString & empty_label, const QString & configured) {
+      const QString previous = selectedTopic(*combo);
+      const QSignalBlocker blocker(combo);
+      combo->clear();
+      combo->addItem(empty_label, QString());
+      for (const auto & topic : topics) {
+        if (topic.signal == role && combo->findData(topic.path) < 0) {
+          combo->addItem(topic.name, topic.path);
+        }
       }
-      return;
-    }
-    camera_combo_->clear();
-    available_devices_ = devices;
-    QHash<QString, int> device_rows;
-    for (const auto & device : devices) {
-      const QString key = device.path.left(device.path.lastIndexOf(':'));
-      int row = device_rows.value(key, -1);
-      if (row < 0) {
-        camera_combo_->addItem(QStringLiteral("[%1] %2")
-          .arg(device.backend.toUpper(), device.name), device.path);
-        row = camera_combo_->count() - 1;
-        device_rows.insert(key, row);
+      const QString wanted = !previous.isEmpty() ? previous :
+        (!topic_selection_touched_ ? configured : QString());
+      const int row = combo->findData(wanted);
+      combo->setCurrentIndex(row > 0 ? row : 0);
+    };
+    fill(image_topic_edit_, QStringLiteral("rgb"), QStringLiteral("无图像话题"),
+      default_image_topic_);
+    fill(cloud_topic_edit_, QStringLiteral("depth"), QStringLiteral("无点云话题"),
+      default_cloud_topic_);
+    fill(topic_control_command_edit_, QStringLiteral("command"),
+      QStringLiteral("不控制驱动"), default_command_topic_);
+    fill(topic_control_status_edit_, QStringLiteral("status"),
+      QStringLiteral("不读取状态"), default_status_topic_);
+    fill(extrinsic_camera_info_edit_, QStringLiteral("camera_info"),
+      QStringLiteral("无 CameraInfo 话题"), default_camera_info_topic_);
+    available_streams_.clear();
+    const bool has_image = std::any_of(topics.begin(), topics.end(), [](const auto & item) {
+      return item.signal == QStringLiteral("rgb");
+    });
+    const bool has_cloud = std::any_of(topics.begin(), topics.end(), [](const auto & item) {
+      return item.signal == QStringLiteral("depth");
+    });
+    if (has_image) {available_streams_.push_back({QStringLiteral("ros-topic:configured:rgb"),
+      QStringLiteral("图像"), QStringLiteral("rgb")});}
+    if (has_cloud) {available_streams_.push_back({QStringLiteral("ros-topic:configured:depth"),
+      QStringLiteral("点云"), QStringLiteral("depth")});}
+    selected_backend_name_ = QStringLiteral("ros-topic");
+    if (!camera_connected_) {
+      rebuildStreamMenu();
+      if (checkedStreams().isEmpty()) {
+        selected_signal_name_.clear();
+        selected_signal_calibratable_ = false;
       }
-      if (device.signal == QStringLiteral("rgb") ||
-        !camera_combo_->itemData(row, Qt::UserRole + 2).isValid()) {
-        camera_combo_->setItemData(row, device.path);
-        camera_combo_->setItemData(row, device.calibratable, Qt::UserRole + 1);
-        camera_combo_->setItemData(row, device.signal, Qt::UserRole + 2);
-        camera_combo_->setItemData(row, device.backend, Qt::UserRole + 3);
-      }
     }
-    if (!devices.empty()) {
-      selected_signal_calibratable_ = camera_combo_->currentData(Qt::UserRole + 1).toBool();
-      selected_signal_name_ = camera_combo_->currentData(Qt::UserRole + 2).toString();
-      selected_backend_name_ = camera_combo_->currentData(Qt::UserRole + 3).toString();
-      updateTopicInputsVisibility();
-      disable_emitter_checkbox_->setEnabled(
-        selected_backend_name_ == QStringLiteral("orbbec") ||
-        selected_backend_name_ == QStringLiteral("realsense"));
-    }
-    connect_button_->setEnabled(!devices.empty());
+    connect_button_->setEnabled(!camera_connected_ && canConnectTopics());
     updateTopicInputsVisibility();
-    if (devices.empty()) {
-      selected_signal_calibratable_ = false;
-      selected_signal_name_.clear();
-      selected_backend_name_.clear();
-      disable_emitter_checkbox_->setEnabled(false);
-      signal_notice_->setText(QStringLiteral(
-        "未发现设备。请检查 USB、udev 权限，以及 Orbbec/RealSense SDK 安装状态。"));
-    }
     updateCalibrationAvailability();
-    rebuildStreamMenu();
+    if (!has_image && !has_cloud) {
+      signal_notice_->setText(QStringLiteral("未发现图像或点云话题。请启动发布端并刷新。"));
+    }
     refresh_button_->setEnabled(true);
   };
   transport_.onConnectionChanged = [this](bool connected, const QString & message) {
@@ -1405,6 +1477,7 @@ void CalibrationWindow::bindTransport()
     }
     camera_operation_pending_ = false;
     camera_connected_ = connected;
+    updateCalibrationModeUi();
     topic_inputs_dirty_ = false;
     apply_topic_inputs_button_->setEnabled(false);
     if (!connected) {connected_device_id_.clear();}
@@ -1412,12 +1485,12 @@ void CalibrationWindow::bindTransport()
     connection_status_->setText(connected ? QStringLiteral("● 已连接（未启动）") :
       QStringLiteral("● 未连接"));
     connection_status_->setStyleSheet(connected ? "color:#ffc857;" : "color:#ff6573;");
-    connect_button_->setEnabled(!connected);
+    connect_button_->setEnabled(!connected && canConnectTopics());
     disconnect_button_->setEnabled(connected);
     start_stop_button_->setEnabled(connected);
-    start_stop_button_->setText(QStringLiteral("启动相机"));
+    start_stop_button_->setText(QStringLiteral("开始接收"));
     calibration_start_stop_button_->setEnabled(connected);
-    calibration_start_stop_button_->setText(QStringLiteral("启动相机"));
+    calibration_start_stop_button_->setText(QStringLiteral("开始接收"));
     calibration_connection_status_->setText(connection_status_->text());
     calibration_connection_status_->setStyleSheet(connection_status_->styleSheet());
     camera_combo_->setEnabled(!connected);
@@ -1425,22 +1498,22 @@ void CalibrationWindow::bindTransport()
     cloud_topic_edit_->setEnabled(true);
     topic_control_command_edit_->setEnabled(true);
     topic_control_status_edit_->setEnabled(true);
-    stream_button_->setEnabled(connected || camera_combo_->count() > 0);
-    resolution_combo_->setEnabled(!connected &&
-      selected_backend_name_ != QStringLiteral("ros-topic"));
-    disable_emitter_checkbox_->setEnabled(
-      selected_backend_name_ == QStringLiteral("orbbec") ||
-      selected_backend_name_ == QStringLiteral("realsense"));
+    stream_button_->setEnabled(!stream_actions_.isEmpty());
+    resolution_combo_->setEnabled(!connected);
+    disable_emitter_checkbox_->setEnabled(false);
     if (!connected) {emitter_change_pending_ = false;}
     confirmed_emitter_disabled_ = disable_emitter_checkbox_->isChecked();
     disable_emitter_checkbox_->setText(QStringLiteral("关闭红外投射器"));
-    refresh_button_->setEnabled(!connected);
+    refresh_button_->setEnabled(true);
     home_capture_button_->setEnabled(false);
     updateCalibrationAvailability();
     appendLog(message);
-    resolution_notice_->setText(QStringLiteral(
-      "⚠ 当前标定分辨率：%1 × %2。连接后无需启动相机即可批量导图标定。")
-      .arg(active_width_).arg(active_height_));
+    resolution_notice_->setText(connected ? QStringLiteral(
+      "⚠ 当前标定分辨率：%1 × %2。可批量导入同分辨率图片或开始接收后拍摄。")
+      .arg(active_width_).arg(active_height_) : session_image_size_.isValid() ?
+      QStringLiteral("离线标定分辨率：%1 × %2（本次会话已锁定）")
+        .arg(session_image_size_.width()).arg(session_image_size_.height()) :
+      QStringLiteral("离线标定：导入图片时按首张可读取图片确定分辨率。"));
     if (!connected) {
       for (auto * view : stream_views_) {
         view->clearImage(QStringLiteral("相机已断开"));
@@ -1463,8 +1536,8 @@ void CalibrationWindow::bindTransport()
       right_view_->clearImage(QStringLiteral("特征点识别结果"));
       capture_button_->setEnabled(false);
     } else {
-      home_live_view_->clearImage(QStringLiteral("已连接，点击“启动相机”后显示视频"));
-      left_view_->clearImage(QStringLiteral("相机未启动；可直接批量导入图片"));
+      home_live_view_->clearImage(QStringLiteral("已连接，点击“开始接收”后显示视频"));
+      left_view_->clearImage(QStringLiteral("尚未接收数据；可直接批量导入图片"));
       capture_button_->setEnabled(false);
     }
     if (connected && stream_restart_pending_) {
@@ -1501,7 +1574,7 @@ void CalibrationWindow::bindTransport()
     start_stop_button_->setEnabled(camera_connected_);
     calibration_start_stop_button_->setEnabled(camera_connected_);
     disconnect_button_->setEnabled(camera_connected_);
-    start_stop_button_->setText(streaming ? QStringLiteral("关闭相机") : QStringLiteral("启动相机"));
+    start_stop_button_->setText(streaming ? QStringLiteral("停止接收") : QStringLiteral("开始接收"));
     calibration_start_stop_button_->setText(start_stop_button_->text());
     connection_status_->setText(streaming ? QStringLiteral("● 已启动") :
       (camera_connected_ ? QStringLiteral("● 已连接（未启动）") : QStringLiteral("● 未连接")));
@@ -1541,14 +1614,14 @@ void CalibrationWindow::bindTransport()
     } else if (camera_connected_) {
       cloud_view_->setPoints({});
       latest_frame_ = QImage();
-      home_live_view_->clearImage(QStringLiteral("相机已关闭；仍保持连接"));
+      home_live_view_->clearImage(QStringLiteral("数据接收已停止；仍保持连接"));
       for (auto * view : stream_views_) {
-        view->clearImage(QStringLiteral("相机已关闭"));
+        view->clearImage(QStringLiteral("数据接收已停止"));
       }
       // 结果页左栏显示的是选中样本原图，与实时视频流无关。
-      // 关闭相机时只清理拍摄视图，不覆盖已经显示的标定结果。
+      // 停止接收时只清理拍摄视图，不覆盖已经显示的标定结果。
       if (calibration_view_ == CalibrationView::Capture) {
-        left_view_->clearImage(QStringLiteral("相机未启动；可继续批量导入图片"));
+        left_view_->clearImage(QStringLiteral("尚未接收数据；可继续批量导入图片"));
       }
     }
     if (!streaming && stream_reconfigure_pending_ && camera_connected_) {
@@ -1558,11 +1631,10 @@ void CalibrationWindow::bindTransport()
         selected_signal_name_;
       connected_device_id_ = new_id;
       active_streams_ = checkedStreams();
-      transport_.connectCamera(new_id, active_width_, active_height_,
-        disable_emitter_checkbox_->isChecked(), active_streams_,
-        image_topic_edit_->text().trimmed(), cloud_topic_edit_->text().trimmed(),
-        topic_control_command_edit_->text().trimmed(),
-        topic_control_status_edit_->text().trimmed());
+      transport_.connectCamera(active_width_, active_height_,
+        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*topic_control_command_edit_),
+        selectedTopic(*topic_control_status_edit_));
     }
   };
   transport_.onCameraCommandFailed = [this](const QString & message) {
@@ -1578,9 +1650,9 @@ void CalibrationWindow::bindTransport()
     start_stop_button_->setEnabled(camera_connected_);
     calibration_start_stop_button_->setEnabled(camera_connected_);
     disconnect_button_->setEnabled(camera_connected_);
-    connect_button_->setEnabled(!camera_connected_ && camera_combo_->count() > 0);
+    connect_button_->setEnabled(!camera_connected_ && canConnectTopics());
     start_stop_button_->setText(
-      camera_streaming_ ? QStringLiteral("关闭相机") : QStringLiteral("启动相机"));
+      camera_streaming_ ? QStringLiteral("停止接收") : QStringLiteral("开始接收"));
     calibration_start_stop_button_->setText(start_stop_button_->text());
     if (guided_start_pending_) {stopGuidedCapture();}
     guided_start_pending_ = false;
@@ -1596,9 +1668,7 @@ void CalibrationWindow::bindTransport()
       disable_emitter_checkbox_->setChecked(confirmed_emitter_disabled_);
     }
     disable_emitter_checkbox_->setText(QStringLiteral("关闭红外投射器"));
-    disable_emitter_checkbox_->setEnabled(camera_connected_ &&
-      (selected_backend_name_ == QStringLiteral("orbbec") ||
-      selected_backend_name_ == QStringLiteral("realsense")));
+    disable_emitter_checkbox_->setEnabled(false);
     updateCalibrationAvailability();
     if (!success) {appendLog(message);}
   };
@@ -1644,6 +1714,18 @@ void CalibrationWindow::bindTransport()
       accept_button_->setEnabled(corners_valid_ && !current_quality_.board_size_warning);
       return;
     }
+    const QSize saved_size = imageSize(path);
+    if (!saved_size.isValid() ||
+      (session_image_size_.isValid() && saved_size != session_image_size_)) {
+      transport_.deleteSample(path);
+      appendLog(QStringLiteral("拒绝保存不同分辨率的拍摄图片：") + path);
+      resetCaptureView();
+      calibration_status_->setText(QStringLiteral(
+        "拍摄图片与本次标定分辨率不一致，已拒绝；请新建会话后再拍摄。"));
+      calibration_status_->setStyleSheet("color:#ff6573;");
+      return;
+    }
+    if (!session_image_size_.isValid()) {session_image_size_ = saved_size;}
     manual_capture_preview_pending_ = false;
     const bool quality_warning = current_quality_.blur_warning ||
       current_quality_.exposure_warning || current_quality_.board_size_warning;
@@ -1680,6 +1762,15 @@ void CalibrationWindow::bindTransport()
         addBatchProblem(batch_current_source_, path);
         return;
       }
+      const QSize saved_size = imageSize(path);
+      if (!saved_size.isValid() ||
+        (session_image_size_.isValid() && saved_size != session_image_size_)) {
+        transport_.deleteSample(path);
+        addBatchProblem(batch_current_source_,
+          QStringLiteral("保存图片的分辨率与本次标定不一致"));
+        return;
+      }
+      if (!session_image_size_.isValid()) {session_image_size_ = saved_size;}
       const bool quality_warning = current_quality_.blur_warning ||
         current_quality_.exposure_warning || current_quality_.board_size_warning;
       const QString state = !batch_current_valid_ ? QStringLiteral("⚠ ") :
@@ -1764,6 +1855,7 @@ void CalibrationWindow::bindTransport()
     accept_button_->hide();
     retake_button_->hide();
     supplement_button_->show();
+    updateCalibrationModeUi();
     delete_button_->setEnabled(true);
     result_controls_->show();
     {
@@ -1879,6 +1971,7 @@ void CalibrationWindow::startNewCalibrationSession()
 {
   if (guided_active_) {stopGuidedCapture();}
   sample_list_->clear();
+  session_image_size_ = QSize();
   calibration_quality_panel_->hide();
   quality_cache_.clear();
   global_error_image_path_.clear();
@@ -1919,6 +2012,16 @@ void CalibrationWindow::processNextBatchImage()
     return;
   }
   batch_current_source_ = batch_import_queue_.takeFirst();
+  const QSize imported_size = imageSize(batch_current_source_);
+  const QSize expected_size = session_image_size_.isValid() ? session_image_size_ :
+    QSize(active_width_, active_height_);
+  if (imported_size.isValid() && imported_size != expected_size) {
+    addBatchProblem(batch_current_source_,
+      QStringLiteral("图片分辨率 %1×%2 与本次标定 %3×%4 不一致")
+        .arg(imported_size.width()).arg(imported_size.height())
+        .arg(expected_size.width()).arg(expected_size.height()));
+    return;
+  }
   const quint64 request_id = ++batch_request_id_;
   QTimer::singleShot(30000, this, [this, request_id]() {
     if (!batch_import_active_ || batch_request_id_ != request_id) {return;}
@@ -2011,7 +2114,8 @@ void CalibrationWindow::resetCaptureView()
   select_image_button_->setEnabled(true);
   calibration_status_->setStyleSheet("");
   calibration_status_->setText(camera_streaming_ ? QStringLiteral("调整标定板姿态后拍摄") :
-    QStringLiteral("相机未启动：可批量导入图片，或返回首页启动相机后拍摄"));
+    camera_connected_ ? QStringLiteral("可批量导入图片，或开始接收后拍摄") :
+    QStringLiteral("离线标定：批量导入同分辨率图片后开始标定"));
   // 进入拍摄态后，左栏的所有权必须立即交还给实时视频。
   // 即使尚未收到新帧，也不能继续留着结果态的选中原图。
   if (!latest_frame_.isNull() && camera_streaming_) {
@@ -2020,10 +2124,13 @@ void CalibrationWindow::resetCaptureView()
     left_view_->clearImage(QStringLiteral("等待相机首帧…"));
     calibration_quality_panel_->clear();
   } else {
-    left_view_->clearImage(QStringLiteral("相机未启动；可继续批量导入图片"));
+    left_view_->clearImage(camera_connected_ ?
+      QStringLiteral("尚未接收数据；可继续批量导入图片") :
+      QStringLiteral("离线标定：请选择图片导入"));
     calibration_quality_panel_->clear();
   }
   updateSampleCount();
+  updateCalibrationModeUi();
 }
 
 void CalibrationWindow::updateSampleCount()
@@ -2306,8 +2413,13 @@ void CalibrationWindow::requestSelectedResultImages()
 
 void CalibrationWindow::updateCalibrationAvailability()
 {
-  const bool single_signal = checkedStreams().size() == 1;
-  const bool enabled = camera_connected_ && single_signal && selected_signal_calibratable_ &&
+  enter_calibration_button_->setText(camera_connected_ ?
+    QStringLiteral("进入内参标定  →") : QStringLiteral("离线导图标定  →"));
+  const QStringList streams = checkedStreams();
+  const bool single_signal = streams.size() == 1;
+  const bool offline_without_topic = !camera_connected_ && streams.isEmpty();
+  const bool enabled = (offline_without_topic ||
+    (single_signal && selected_signal_calibratable_)) &&
     !home_capture_frozen_ && !emitter_change_pending_ && calibrationKindAvailable() &&
     (!selected_signal_name_.startsWith(QStringLiteral("ir-")) ||
     confirmed_emitter_disabled_);
@@ -2332,6 +2444,12 @@ void CalibrationWindow::updateCalibrationAvailability()
     signal_notice_->setStyleSheet("color:#ffc857;");
     return;
   }
+  if (offline_without_topic) {
+    signal_notice_->setText(QStringLiteral(
+      "离线内参标定：无需连接；进入后导入同分辨率图片即可标定。"));
+    signal_notice_->setStyleSheet("color:#4ddd8b;");
+    return;
+  }
   if (selected_signal_name_.isEmpty()) {return;}
   if (selected_signal_name_.startsWith(QStringLiteral("ir-")) &&
     !disable_emitter_checkbox_->isChecked())
@@ -2341,10 +2459,11 @@ void CalibrationWindow::updateCalibrationAvailability()
       .arg(selected_signal_name_));
     signal_notice_->setStyleSheet("color:#ff6573;");
   } else if (selected_signal_calibratable_) {
-    signal_notice_->setText(QStringLiteral(
-      "当前信号：%1（%2可进行内参标定；结果只对应此成像器与分辨率）")
+    signal_notice_->setText(camera_connected_ ? QStringLiteral(
+      "当前信号：%1（%2可拍摄或导入图片标定；结果只对应此成像器与分辨率）")
       .arg(selected_signal_name_, selected_signal_name_.startsWith(QStringLiteral("ir-")) ?
-      QStringLiteral("投射器关闭后的纯灰度，") : QString()));
+      QStringLiteral("投射器关闭后的纯灰度，") : QString()) :
+      QStringLiteral("离线内参标定：无需连接；导入同分辨率图片即可标定。"));
     signal_notice_->setStyleSheet("color:#4ddd8b;");
   } else {
     signal_notice_->setText(QStringLiteral(
@@ -2352,6 +2471,20 @@ void CalibrationWindow::updateCalibrationAvailability()
       .arg(selected_signal_name_));
     signal_notice_->setStyleSheet("color:#ffc857;");
   }
+}
+
+void CalibrationWindow::updateCalibrationModeUi()
+{
+  const bool online = camera_connected_;
+  calibration_connection_status_->setVisible(online);
+  calibration_start_stop_button_->setVisible(online);
+  if (calibration_view_ == CalibrationView::Capture) {
+    capture_button_->setVisible(online);
+    accept_button_->setVisible(online);
+    retake_button_->setVisible(online);
+  }
+  supplement_button_->setText(online ? QStringLiteral("补拍") :
+    QStringLiteral("继续导入图片"));
 }
 
 void CalibrationWindow::selectSample()
@@ -2422,21 +2555,20 @@ void CalibrationWindow::handleCameraDisconnected(const QString & message)
 
   connection_status_->setText(QStringLiteral("● 未连接"));
   connection_status_->setStyleSheet("color:#ff6573;");
-  start_stop_button_->setText(QStringLiteral("启动相机"));
+  start_stop_button_->setText(QStringLiteral("开始接收"));
   start_stop_button_->setEnabled(false);
-  calibration_start_stop_button_->setText(QStringLiteral("启动相机"));
+  calibration_start_stop_button_->setText(QStringLiteral("开始接收"));
   calibration_start_stop_button_->setEnabled(false);
   calibration_connection_status_->setText(QStringLiteral("● 未连接"));
   calibration_connection_status_->setStyleSheet("color:#ff6573;");
   disconnect_button_->setEnabled(false);
   connect_button_->setEnabled(false);
   camera_combo_->setEnabled(true);
-  camera_combo_->clear();
-  available_devices_.clear();
+  selected_backend_name_ = QStringLiteral("ros-topic");
   rebuildStreamMenu();
-  selected_signal_calibratable_ = false;
-  selected_signal_name_.clear();
-  selected_backend_name_.clear();
+  selected_signal_name_ = checkedStreams().contains(QStringLiteral("rgb")) ?
+    QStringLiteral("rgb") : QStringLiteral("depth");
+  selected_signal_calibratable_ = selected_signal_name_ == QStringLiteral("rgb");
   resolution_combo_->setEnabled(true);
   refresh_button_->setEnabled(true);
   disable_emitter_checkbox_->setEnabled(false);
@@ -2469,11 +2601,12 @@ void CalibrationWindow::handleCameraDisconnected(const QString & message)
   right_view_->clearImage(QStringLiteral("特征点识别结果"));
   right_view_->show();
   pages_->setCurrentWidget(home_page_);
-  calibration_status_->setText(QStringLiteral("相机已断开，请重新连接或批量导入图片"));
+  calibration_status_->setText(QStringLiteral("离线标定可直接导入图片"));
+  updateCalibrationModeUi();
+  updateCalibrationAvailability();
   appendLog(message);
 
-  // 拔线瞬间不立即重新进入厂商 SDK 枚举，避免枚举与 SDK 的断线清理互相等待。
-  // 用户重新插入后点击“刷新设备”即可；未启动状态的低频枚举也会识别断线。
+  // The selected ROS topics can be discovered again with the refresh button.
 }
 
 }  // namespace danmucamera

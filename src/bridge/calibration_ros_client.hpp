@@ -17,13 +17,11 @@
 namespace danmucamera
 {
 
-struct UiCameraDevice
+struct UiTopicSource
 {
   QString path;
   QString name;
-  QString backend;
   QString signal;
-  bool calibratable{false};
 };
 
 struct CalibrationSettings
@@ -136,15 +134,14 @@ public:
   CalibrationRosClient & operator=(const CalibrationRosClient &) = delete;
 
   bool spinSome();
-  void refreshDevices();
+  void refreshTopics();
   void refreshTopicInputs();
   void refreshExtrinsicInput();
   void setExtrinsicInput(const QString & camera_info, double max_pair_delta_ms);
   void connectCamera(
-    const QString & device_id, int width, int height, bool disable_ir_emitter,
-    const QStringList & stream_names = {}, const QString & image_topic = {},
-    const QString & cloud_topic = {}, const QString & control_command = {},
-    const QString & control_status = {});
+    int width, int height, const QString & image_topic,
+    const QString & cloud_topic, const QString & control_command,
+    const QString & control_status);
   void startCamera();
   void stopCamera();
   void setIrEmitterDisabled(bool disabled);
@@ -184,7 +181,7 @@ public:
   std::function<void(const QString &)> onLog;
   std::function<void(const QString &)> onStatus;
   std::function<void(const QString &)> onResult;
-  std::function<void(const std::vector<UiCameraDevice> &)> onDevices;
+  std::function<void(const std::vector<UiTopicSource> &)> onTopics;
   std::function<void(const QString &, const QString &)> onTopicDefaults;
   std::function<void(const QString &, const QString &)> onTopicControlDefaults;
   std::function<void(const QString &, double)> onExtrinsicInput;

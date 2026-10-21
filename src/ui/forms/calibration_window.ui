@@ -108,7 +108,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                               </size>
                             </property>
                             <property name="toolTip">
-                              <string>可选择 SDK、物理设备以及 RGB/灰度/深度信号</string>
+                              <string>ROS 话题输入组</string>
                             </property>
                           </widget>
                         </item>
@@ -165,7 +165,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                         <item>
                           <widget class="QPushButton" name="refresh_button">
                             <property name="text">
-                              <string>刷新设备/信号</string>
+                              <string>刷新 ROS 话题</string>
                             </property>
                           </widget>
                         </item>
@@ -185,7 +185,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                               <string>连接只锁定设备和参数；启动后才打开相机并开始实时采流</string>
                             </property>
                             <property name="text">
-                              <string>启动相机</string>
+                              <string>开始接收</string>
                             </property>
                           </widget>
                         </item>
@@ -283,7 +283,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                               <bool>false</bool>
                             </property>
                             <property name="toolTip">
-                              <string>只有 RGB 或红外灰度信号可进行相机内参标定</string>
+                              <string>离线可直接导入图片标定；在线只允许单选可标定图像流</string>
                             </property>
                             <property name="text">
                               <string>进入内参标定  →</string>
@@ -297,7 +297,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                 <item>
                   <widget class="QLabel" name="signal_notice">
                     <property name="text">
-                      <string>请选择设备信号。深度流仅用于观察，不能进入内参标定。</string>
+                      <string>离线可直接导入图片标定；在线请选择单路图像流。</string>
                     </property>
                     <property name="wordWrap">
                       <bool>true</bool>
@@ -394,7 +394,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                           <string>与首页的相机启动/关闭按钮完全同步</string>
                         </property>
                         <property name="text">
-                          <string>启动相机</string>
+                          <string>开始接收</string>
                         </property>
                       </widget>
                     </item>

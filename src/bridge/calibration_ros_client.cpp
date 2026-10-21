@@ -342,7 +342,7 @@ public:
     emitter_client_ = node_->create_client<std_srvs::srv::SetBool>(contract::kEmitterService);
     capture_client_ = node_->create_client<std_srvs::srv::Trigger>(contract::kCaptureService);
     save_client_ = node_->create_client<std_srvs::srv::Trigger>(contract::kSaveService);
-    device_client_ = node_->create_client<std_srvs::srv::Trigger>(contract::kRefreshDevicesService);
+    topic_client_ = node_->create_client<std_srvs::srv::Trigger>(contract::kRefreshTopicsService);
     calibration_client_ = node_->create_client<std_srvs::srv::Trigger>(
       contract::kRunCalibrationService);
     parameter_client_ = std::make_shared<rclcpp::AsyncParametersClient>(
@@ -430,7 +430,7 @@ public:
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emitter_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr capture_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr save_client_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr device_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr topic_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr calibration_client_;
   std::shared_ptr<rclcpp::AsyncParametersClient> parameter_client_;
   std::shared_ptr<rclcpp::AsyncParametersClient> algorithm_parameter_client_;
@@ -466,32 +466,30 @@ bool CalibrationRosClient::spinSome()
   return rclcpp::ok() && impl_->running_;
 }
 
-void CalibrationRosClient::refreshDevices()
+void CalibrationRosClient::refreshTopics()
 {
-  if (!impl_->device_client_->service_is_ready()) {
-    impl_->log("设备发现服务未就绪");
+  if (!impl_->topic_client_->service_is_ready()) {
+    impl_->log("ROS 话题发现服务未就绪");
+    impl_->dispatch([this]() {if (onTopics) {onTopics({});}});
     return;
   }
-  impl_->device_client_->async_send_request(
+  impl_->topic_client_->async_send_request(
     std::make_shared<std_srvs::srv::Trigger::Request>(),
     [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
       const auto response = future.get();
-      std::vector<UiCameraDevice> devices;
+      std::vector<UiTopicSource> topics;
       if (response->success) {
         const QStringList lines = QString::fromStdString(response->message)
           .split('\n', Qt::SkipEmptyParts);
         for (const QString & line : lines) {
           const QStringList fields = line.split('|');
-          const QString signal = fields.value(3, QStringLiteral("rgb"));
-          devices.push_back({
-            fields.value(0), fields.value(1, QStringLiteral("Camera")),
-            fields.value(2, QStringLiteral("v4l2")), signal,
-            signal == QStringLiteral("rgb") || signal.startsWith(QStringLiteral("ir"))});
+          if (fields.size() != 3 || !fields[0].startsWith('/')) {continue;}
+          topics.push_back({fields[0], fields[1], fields[2]});
         }
       } else {
         impl_->log(response->message);
       }
-      impl_->dispatch([this, devices]() {if (onDevices) {onDevices(devices);}});
+      impl_->dispatch([this, topics]() {if (onTopics) {onTopics(topics);}});
     });
 }
 
@@ -559,43 +557,47 @@ void CalibrationRosClient::setExtrinsicInput(
 }
 
 void CalibrationRosClient::connectCamera(
-  const QString & device_id, int width, int height, bool disable_ir_emitter,
-  const QStringList & stream_names, const QString & image_topic,
+  int width, int height, const QString & image_topic,
   const QString & cloud_topic, const QString & control_command,
   const QString & control_status)
 {
+  const auto topics = impl_->node_->get_topic_names_and_types();
+  const auto has_type = [this, &topics](const QString & name, const char * type) {
+    const auto found = topics.find(name.toStdString());
+    return !name.isEmpty() && found != topics.end() &&
+      std::find(found->second.begin(), found->second.end(), type) != found->second.end() &&
+      impl_->node_->count_publishers(name.toStdString()) > 0;
+  };
+  const bool image_found = has_type(image_topic, contract::extrinsic_input::kRawImageType) ||
+    has_type(image_topic, contract::extrinsic_input::kCompressedImageType);
+  const bool cloud_found = has_type(cloud_topic, contract::extrinsic_input::kCloudType);
+  if (!image_found && !cloud_found) {
+    if (onConnectionChanged) {
+      onConnectionChanged(false, "未发现已选图像或点云话题；请启动发布端并刷新");
+    }
+    return;
+  }
   if (!impl_->parameter_client_->service_is_ready()) {
-    impl_->log("相机参数服务未就绪");
+    impl_->log("话题参数服务未就绪");
     if (onConnectionChanged) {onConnectionChanged(false, "参数服务未就绪");}
     return;
   }
   std::vector<rclcpp::Parameter> parameters{
-    rclcpp::Parameter("device", device_id.toStdString()),
-      rclcpp::Parameter("width", width), rclcpp::Parameter("height", height),
-      rclcpp::Parameter("disable_ir_emitter", disable_ir_emitter),
-      rclcpp::Parameter("signals", [&stream_names]() {
-        std::vector<std::string> values;
-        for (const auto & signal : stream_names) {values.push_back(signal.toStdString());}
-        return values;
-      }())};
-  if (device_id.startsWith(QStringLiteral("ros-topic:"))) {
-    parameters.emplace_back("topic_input.name", image_topic.toStdString());
-    parameters.emplace_back("topic_input.pointcloud_name", cloud_topic.toStdString());
-    parameters.emplace_back(contract::extrinsic_input::kCommandParameter,
-      control_command.toStdString());
-    parameters.emplace_back(contract::extrinsic_input::kStatusParameter,
-      control_status.toStdString());
-  }
-  const size_t expected = parameters.size();
+    rclcpp::Parameter("width", width), rclcpp::Parameter("height", height),
+    rclcpp::Parameter(contract::extrinsic_input::kImageParameter, image_topic.toStdString()),
+    rclcpp::Parameter(contract::extrinsic_input::kCloudParameter, cloud_topic.toStdString()),
+    rclcpp::Parameter(contract::extrinsic_input::kCommandParameter,
+      control_command.toStdString()),
+    rclcpp::Parameter(contract::extrinsic_input::kStatusParameter,
+      control_status.toStdString())};
   impl_->parameter_client_->set_parameters(
     parameters,
-    [this, expected, topic_mode = device_id.startsWith(QStringLiteral("ros-topic:"))]
-    (std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
+    [this](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
       const auto results = future.get();
-      if (results.size() != expected || !std::all_of(results.begin(), results.end(),
+      if (results.size() != 6 || !std::all_of(results.begin(), results.end(),
         [](const auto & result) {return result.successful;})) {
         impl_->dispatch([this, results]() {
-          QString reason = QStringLiteral("设置相机参数失败");
+          QString reason = QStringLiteral("设置话题参数失败");
           for (const auto & result : results) {
             if (!result.successful && !result.reason.empty()) {
               reason += QStringLiteral(": ") + QString::fromStdString(result.reason);
@@ -606,10 +608,10 @@ void CalibrationRosClient::connectCamera(
         });
         return;
       }
-      impl_->dispatch([this, topic_mode]() {
-        if (onConnectionChanged) {onConnectionChanged(true, topic_mode ?
-          "Topic 输入已配置，点击“启动相机”验证驱动和数据" :
-          "相机已连接，点击“启动相机”开始采流");}
+      impl_->dispatch([this]() {
+        if (onConnectionChanged) {
+          onConnectionChanged(true, "Topic 输入已配置，点击“开始接收”验证数据");
+        }
       });
     });
 }

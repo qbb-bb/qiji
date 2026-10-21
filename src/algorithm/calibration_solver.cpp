@@ -56,7 +56,8 @@ std::string pathString(const std::filesystem::path & path)
   return std::filesystem::absolute(path).string();
 }
 
-constexpr double kArrowLengthPx = 18.0;
+// Subpixel residuals are enlarged uniformly; arrow length carries magnitude.
+constexpr double kResidualArrowMagnification = 32.0;
 
 cv::Scalar directionColor(const cv::Point2f & residual)
 {
@@ -87,8 +88,8 @@ void drawArrow(cv::Mat & image, const cv::Point2f & origin,
   const double length = cv::norm(residual);
   const cv::Scalar color = length > 1e-9 ? directionColor(residual) :
     cv::Scalar(175, 175, 175);
-  const cv::Point2f end = length > 1e-9 ?
-    start + residual * static_cast<float>(kArrowLengthPx * image_scale / length) : start;
+  const cv::Point2f end = start + residual *
+    static_cast<float>(kResidualArrowMagnification * image_scale);
   if (length > 1e-9) {
     cv::arrowedLine(image, start, end, color, std::max(2, cvRound(image_scale)),
       cv::LINE_AA, 0, 0.32);
@@ -110,7 +111,9 @@ void svgHeader(std::ostream & out, const cv::Size & size)
 {
   out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 "
       << size.width << ' ' << size.height << "\">\n"
-      << "<rect width=\"100%\" height=\"100%\" fill=\"#101923\"/>\n";
+      << "<rect width=\"100%\" height=\"100%\" fill=\"#101923\"/>\n"
+      << "<text x=\"18\" y=\"28\" fill=\"#ffffff\" font-size=\"16\">"
+      << "Residual arrows: 32x pixel error</text>\n";
   for (int step = 1; step < 10; ++step) {
     const double x = size.width * step / 10.0;
     const double y = size.height * step / 10.0;
@@ -123,8 +126,8 @@ void svgArrow(std::ostream & out, const cv::Point2f & origin,
   const cv::Point2f & residual, double opacity, const std::string & label)
 {
   const double length = cv::norm(residual);
-  const cv::Point2f end = length > 1e-9 ?
-    origin + residual * static_cast<float>(kArrowLengthPx / length) : origin;
+  const cv::Point2f end = origin + residual *
+    static_cast<float>(kResidualArrowMagnification);
   const std::string color = length > 1e-9 ?
     svgColor(directionColor(residual)) : "#aaaaaa";
   out << "<g stroke=\"" << color << "\" fill=\"" << color
@@ -242,7 +245,7 @@ int main(int argc, char ** argv)
     double rms;
     if (settings.camera_model == "fisheye") {
       int flags = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC |
-        cv::fisheye::CALIB_FIX_SKEW | cv::fisheye::CALIB_USE_INTRINSIC_GUESS;
+        cv::fisheye::CALIB_USE_INTRINSIC_GUESS;
       if (settings.distortion_model == "fisheye2") {
         flags |= cv::fisheye::CALIB_FIX_K3 | cv::fisheye::CALIB_FIX_K4;
       }
@@ -255,8 +258,10 @@ int main(int argc, char ** argv)
         dimension * 0.50, dimension * 0.625} :
         std::vector<double>{settings.fx};
       double best_rms = std::numeric_limits<double>::infinity();
+      bool best_fixed_skew = true;
       std::string last_error;
       for (const double focal : focal_candidates) {
+        for (const bool fixed_skew : {true, false}) {
         cv::Mat candidate_K = K.clone();
         if (settings.automatic_initial) {
           candidate_K.at<double>(0, 0) = focal;
@@ -267,13 +272,18 @@ int main(int argc, char ** argv)
         try {
           const double candidate_rms = cv::fisheye::calibrate(
             object_points, image_points, image_size, candidate_K, candidate_D,
-            candidate_rvecs, candidate_tvecs, flags,
+            candidate_rvecs, candidate_tvecs,
+            flags | (fixed_skew ? cv::fisheye::CALIB_FIX_SKEW : 0),
             cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
           if (!std::isfinite(candidate_rms) || candidate_K.at<double>(0, 0) <= 0 ||
             candidate_K.at<double>(1, 1) <= 0) {continue;}
-          std::cout << "鱼眼初值 fx=" << focal << "：RMS=" << candidate_rms << " px\n";
-          if (candidate_rms < best_rms) {
+          std::cout << "鱼眼初值 fx=" << focal << "，skew "
+            << (fixed_skew ? "固定" : "自由") << "：RMS=" << candidate_rms << " px\n";
+          // Free skew adds one parameter. Require a meaningful improvement
+          // before selecting it over the simpler zero-skew model.
+          if (candidate_rms + (fixed_skew ? 0.0 : 0.005) < best_rms) {
             best_rms = candidate_rms;
+            best_fixed_skew = fixed_skew;
             K = candidate_K;
             D = candidate_D;
             rvecs = std::move(candidate_rvecs);
@@ -281,13 +291,16 @@ int main(int argc, char ** argv)
           }
         } catch (const cv::Exception & error) {
           last_error = error.what();
-          std::cout << "鱼眼初值 fx=" << focal << "：求解未收敛\n";
+          std::cout << "鱼眼初值 fx=" << focal << "，skew "
+            << (fixed_skew ? "固定" : "自由") << "：求解未收敛\n";
+        }
         }
       }
       if (!std::isfinite(best_rms)) {
         throw std::runtime_error("所有鱼眼初值均求解失败: " + last_error);
       }
       rms = best_rms;
+      std::cout << "鱼眼 skew 模型: " << (best_fixed_skew ? "固定为零" : "参与优化") << '\n';
     } else {
       int flags = cv::CALIB_USE_INTRINSIC_GUESS;
       if (settings.distortion_model == "rational8") {flags |= cv::CALIB_RATIONAL_MODEL;}
@@ -328,6 +341,8 @@ int main(int argc, char ** argv)
     }
 
     const double scale = 3.0;
+    std::cout << "误差矢量箭头按实际像素残差放大 " << kResidualArrowMagnification
+      << " 倍；长度反映误差大小。\n";
     cv::Mat global(static_cast<int>(image_size.height * scale),
       static_cast<int>(image_size.width * scale), CV_8UC3, cv::Scalar(17, 25, 16));
     const auto data_path = output_dir / "visualization_data.tsv";
@@ -401,6 +416,10 @@ int main(int argc, char ** argv)
         svgArrow(global_svg, estimate, residual, 0.85, "");
       }
       sample_svg << "</svg>\n";
+      cv::rectangle(error_view, cv::Rect(8, 8, 250, 30), cv::Scalar(16, 25, 35),
+        cv::FILLED);
+      cv::putText(error_view, "Residual arrows x32", cv::Point(16, 30),
+        cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
       const double mean = image_sum / projected.size();
       const auto error_path = output_dir / ("error_vis_" + std::to_string(i) + ".png");
       const auto undistort_path = output_dir / ("undistorted_" + std::to_string(i) + ".png");
@@ -413,6 +432,9 @@ int main(int argc, char ** argv)
         << pathString(error_path) << '\t' << pathString(undistort_path) << '\n';
     }
     global_svg << "</svg>\n";
+    cv::rectangle(global, cv::Rect(24, 24, 750, 90), cv::Scalar(16, 25, 35), cv::FILLED);
+    cv::putText(global, "Residual arrows x32", cv::Point(48, 90),
+      cv::FONT_HERSHEY_SIMPLEX, 1.65, cv::Scalar(255, 255, 255), 3, cv::LINE_AA);
     data.close();
     global_svg.close();
     const auto global_path = output_dir / "global_error_distribution.png";

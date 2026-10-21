@@ -1,49 +1,43 @@
 # 相机内参标定工作台
 
-Linux 上的 ROS 2 + Qt 6 + OpenCV 标定程序。相机采集支持 V4L2 彩色流；编译时检测到 Orbbec SDK v2 或 librealsense2 后，会启用对应的 RGB、红外和深度后端。深度流只用于预览，不能参与内参标定。
+Linux ROS 2 + Qt 6 + OpenCV 标定程序。标定进程只接收 ROS 标准话题，不打开相机硬件，也不编译链接厂商 SDK。图像、点云发布端独立运行，可在本机或网络中的 Orin 上。
 
-## 迁移到另一台电脑
+## 安装与启动
 
-编译故障、换机安装命令和逐步验收见 [换机编译与测试说明](docs/换机编译与测试说明.md)。
-
-Ubuntu 22.04/24.04 新电脑可在图形桌面终端运行 `./launch/setup_and_run.sh`。脚本优先使用已安装的 ROS 2 Humble/Jazzy；完全没有 ROS 时才按 Ubuntu 22.04→Humble、24.04→Jazzy 安装，不会增加第二套 ROS。它只安装缺失的 Qt 6、OpenCV、ROS 2 和相机 SDK，随后编译并启动，还会在应用菜单和桌面生成“相机标定工作台”图标；已安装软件包不会被升级或卸载。首次补装需要联网和 sudo 权限。相机未插入时可用 `--camera=orbbec` 或 `--camera=realsense` 预装对应 SDK；已有多个 ROS 时可用 `--ros=jazzy` 或 `--ros=humble` 明确选择。
-
-只复制本目录的 `CMakeLists.txt`、`package.xml`、`src/`、`config/`、`launch/`、`docs/` 和本 README。`build/`、`install/`、`log/` 是本机产物，不要复制；`samples/` 与 `result/calibration/` 是个人数据，按需备份。新电脑须重新标定新相机及其各个分辨率和成像器。
-
-如需手动安装，先准备 ROS 2（含 `ament_cmake`、`rclcpp`、`rcl_interfaces`、`sensor_msgs`、`std_msgs`、`std_srvs`、`launch_ros`）、`colcon`、C++17 编译器、Qt 6 Widgets、OpenCV（含 ArUco）和 `v4l-utils`。按相机厂商提供的说明安装 SDK、运行库和 USB/udev 权限规则。SDK 安装后重新插拔相机。普通 V4L2 相机无需厂商 SDK。
-
-CMake 通过系统搜索路径和 `CMAKE_PREFIX_PATH` 查找 SDK，不写死用户名或 ROS 安装目录。如 SDK 安装在自定义位置，先将其安装前缀加入 `CMAKE_PREFIX_PATH`。新厂商 SDK 仍需在 `src/bridge/io_node.cpp` 增加枚举、开流、取帧和释放的实现。
+Ubuntu 22.04/24.04 图形桌面可运行：
 
 ```bash
-cd /你的路径/qiji
-./launch/build.sh
-./launch/run.sh
+./launch/setup_and_run.sh
 ```
 
-`build.sh` 和 `run.sh` 优先使用 `QIJI_ROS_DISTRO` 或已加载的 ROS 环境；否则检测 `/opt/ros` 中的现有安装。构建输出位于本目录的 `build/`、`install/`、`log/`。`run.sh` 自动进入本目录，原图保存到 `samples/`，每次标定完成后在 `result/` 自动生成 `calibration_report_时间戳.md`，记录设置与阈值、逐图检测、九宫格覆盖、重投影误差和结果文件；其他标定结果保存在 `result/calibration/`。若只想手动启动，可在本目录加载 ROS 与 `install/setup.bash`，再运行 `ros2 launch danmucamera calibration.launch.py`。
+已安装依赖时可分别运行 `./launch/build.sh` 和 `./launch/run.sh`。脚本会清理 Snap 注入的动态库路径；若从 Snap 版编辑器的终端启动失败，使用普通系统终端。新电脑上的构建产物 `build/`、`install/`、`log/` 不要跨机器复制。安装流程只准备 ROS 2、Qt 6 和 OpenCV，不安装相机 SDK。更多说明见 [换机编译与测试说明](docs/换机编译与测试说明.md)。
 
-构建输出中有 `RealSense SDK backend enabled` 或 `Orbbec SDK v2 backend enabled`，表示对应后端已编入。若未显示，检查 SDK 开发头文件、动态库和 CMake 搜索路径，然后清理本目录的 `build/danmucamera/` 并重新构建。
+## 选择图像和点云
 
-## 使用
+在线接收前先运行发布端，再点击界面“刷新 ROS 话题”。图像下拉框只列出有发布者的 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，点云下拉框只列出有发布者的 `sensor_msgs/msg/PointCloud2`；找不到对应格式就显示空选项。两者可只选一路，但都不可用时“连接”不能按。`config/calibration.yaml` 中的 `topic_input.name` 和 `topic_input.pointcloud_name` 只是启动默认值；只有它们已出现在 ROS 图中才自动选中。选择后在“信息流”勾选 RGB、3D 点云或两者，点击“连接”再点击“开始接收”。多路可同时预览；在线单目内参只允许单选图像流。点云支持鼠标旋转和缩放。
 
-刷新相机，选择设备与分辨率，点击“连接相机”。程序只有在 SDK 打开视频流并收到第一帧后才显示已连接、已启动；五秒无有效帧会报错并恢复未连接。关闭相机按钮只停流并保留设备选择；断开按钮清除连接。红外标定应关闭投射器，RGB、左右红外分别标定。导入图片仍可在不连接相机时使用。
+可选的“驱动启停”两个下拉框分别列出 `std_msgs/msg/Bool` 命令话题和 `std_msgs/msg/String` 状态话题。两项同时选择时，“开始接收”发送 `true` 并等待驱动确认；“停止接收”发送 `false`。两项留空时只控制标定程序的订阅，外部驱动自行运行。连接后变更话题可点击“应用话题”。消息、QoS 和外参预留接口见 [ROS 相机雷达外参输入接口](docs/ROS相机雷达外参输入接口.md)。
 
-如果设备出现在列表却无法打开，先检查 SDK 示例程序能否采流、所选分辨率和帧率是否受支持，以及设备是否被其他进程占用。相机采集代码在 `src/bridge/io_node.cpp`，ROS 话题和服务名在 `src/bridge/ros_contract.hpp`。
+点云要求小端 `FLOAT32` 的 `x/y/z` 字段，预览最多抽样约 12000 点。图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8`、`mono16`，以及 H120H 等相机可能发布的 `yuv422`（UYVY）和 `yuv422_yuy2`。不同机器须能互相发现 ROS 2 话题，必要时检查 `ROS_DOMAIN_ID`、网络配置和 `ros2 topic info -v` 的 QoS。图像与点云的组合由用户选择，程序不从名称推断它们属于同一设备。
 
-## 从网络 ROS 2 图像话题采集
+## 独立测试驱动
 
-相机与雷达外参的 Topic 输入角色、CameraInfo、时间戳和坐标系约定见 [ROS 相机雷达外参输入接口](docs/ROS相机雷达外参输入接口.md)。该接口已在配置和界面中声明；外参求解仍处于规划阶段。
+单独开一个终端运行本项目附带的简易 V4L2 发布端：
 
-在运行本程序的电脑上用 `ros2 topic list` 查看完整话题名，再用 `ros2 topic type /实际话题名` 确认格式。设备列表选择 `[ROS-TOPIC] ROS Camera` 后，在首页“图像话题”和“点云话题”输入完整名称（以 `/` 开头）。图像应为 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，点云应为 `sensor_msgs/msg/PointCloud2`。在“信息流”可单选一路或同时勾选 RGB 和 3D 点云；多选可在首页同时预览，进入内参标定前必须只勾选一条可标定流。点云视图支持拖动旋转、滚轮缩放。配置文件 `topic_input.name` 和 `topic_input.pointcloud_name` 只提供启动默认值；界面连接时会覆盖它们，无需每次修改 YAML。连接后仍可修改图像、点云和可选的驱动控制话题，点击“应用话题”即可更新当前连接；若正在采流，程序会先停流、更新参数，再重新启动。`topic_input.type: auto` 自动识别图像消息格式，也可指定 `raw` 或 `compressed`。点云需要小端 FLOAT32 的 x/y/z 字段；预览最多抽样约 12000 点。程序不会仅凭话题名称推断两路数据来自同一物理设备，填写成对的话题即表示用户指定它们为同一相机。当前不执行图像与点云的时间同步或投影配准。
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run danmucamera topic_camera_driver --ros-args -p device:=/dev/video0 -p autostart:=true
+```
 
-图像和点云可只填写一路，也可填写两路而其中一路暂时不可用；至少一路必须可发现并收到数据。远端发布端须在启动采流前可被 ROS 2 发现。若 5 秒内没有收到图像或点云，程序会提示启动失败；采流期间连续 3 秒都无数据会断开。检查两端的 `ROS_DOMAIN_ID`、网络发现及 `ros2 topic info -v /实际话题名` 中的 QoS。此输入使用传感器数据 QoS。原始图像支持 `bgr8`、`rgb8`、`bgra8`、`rgba8`、`mono8`、`mono16` 和相应的 `8UC1`、`16UC1`；16 位单通道图像会转成 8 位供标定。收到的实际分辨率会作为当前标定分辨率，不按界面预设值缩放原图。
+它发布 `/qiji_test/image_raw`（`sensor_msgs/msg/Image`）、订阅 `/qiji_test/stream_command`（`std_msgs/msg/Bool`），并在 `/qiji_test/stream_status`（`std_msgs/msg/String`）报告 `stopped`、`streaming` 或 `error:原因`。可用 `-p image_file:=/绝对路径/图片.jpg` 代替真实相机循环发布静态图；不加 `autostart:=true` 时需在界面同时选中命令和状态话题，再按“开始接收”。该驱动只用于本机验证图像链路；实际雷达点云由你的独立发布端提供。可用 `-p image_topic:=/自定义名称` 等参数改名。
 
-Topic 模式的硬件控制是可选协议：界面“驱动启停”同时填写命令和状态话题后，启动时发送 Bool `true`，收到驱动 `streaming` 状态并收到数据才算启动；停止时发送 `false` 并等待 `stopped`。两项留空时，启动/停止只控制本程序订阅，不操作外部相机。具体消息、QoS 和适配节点责任见 [ROS 相机雷达外参输入接口](docs/ROS相机雷达外参输入接口.md)。原有 Orbbec、RealSense 和 V4L2 路径继续由本程序直接控制。
+若系统使用 ROS 2 Jazzy，把上面命令中的 `humble` 改为 `jazzy`。
 
-自动引导拍摄入口暂时关闭，普通拍摄和批量导图仍可用。未启动相机时，批量导图按界面显示的当前标定分辨率校验图片尺寸，不使用采集节点的启动默认分辨率；图片尺寸不同会在列表中标红并显示两者尺寸，切换目标分辨率后需要重新导入。每张图的标定板像素面积占比必须落在 `config/calibration.yaml` 的 `quality.min_board_area_ratio` 与 `quality.max_board_area_ratio` 之间（当前为 15%～70%）；超出区间会标红，不能人工确认纳入。标定页侧栏将当前有效照片的角点位置按画面九宫格累计，每格显示角点数和占总角点数的比例；`calibration_ui.corner_coverage.min_ratio`（默认 5%）以下提示补拍该方位，`max_ratio`（默认 25%）以上提示该方位过于集中。修改配置后重启程序生效。拍摄预览、保存、批量新增和删除后都会重新统计。九宫格是拍摄指导，不单独阻止求解。
+离线单目内参无需连接或启动话题：直接进入“内参标定”，仅显示导入图片、标定和结果相关操作。未接收视频时，首张可读取图片确定本次会话分辨率；后续多批导入和拍摄的图片都必须与之相同。接收视频时，导入图片须与当前流分辨率一致。不同尺寸的图片标红拒绝，开始求解前还会复查所有有效样本。重新开始标定会话会解除尺寸锁定。结果在 `result/calibration/`，检测报告在 `result/`。
 
 ### 广角镜头与鱼眼标定
 
-对于 GMSL2-H120H（AR0233C、GW5200 ISP、H120H 镜头，标称水平视场 118°）的现有 1920×1080 样本，选择“鱼眼（等距模型）”及 K1–K4 或 K1–K2，勾选自动初值；棋盘格设置填写**内角点** 7×6。该组 19 张样本在 K1–K4 模型下实测 RMS 约 0.37 px。普通针孔 Brown 模型在这组样本上约为 10 px，不应仅因镜头视场小于 180°就改选针孔模型。程序对鱼眼焦距使用多个自动初值，选择重投影误差最低的解；若 RMS 高于图像对角线的 0.1%（最低 1.5 px），会报错并拒绝保存结果，避免把未收敛的 K/D 当成标定成功。
+对于 GMSL2-H120H（AR0233C、GW5200 ISP、H120H 镜头，标称水平视场 118°）的现有 1920×1080 样本，选择“鱼眼（等距模型）”及 K1–K4 或 K1–K2，勾选自动初值；棋盘格设置填写**内角点** 7×6。近期 18 张样本在 K1–K4 模型下实测 RMS 约 0.24 px。普通针孔 Brown 模型在这组样本上约为 10 px，不应仅因镜头视场小于 180°就改选针孔模型。程序对鱼眼焦距尝试多组自动初值，并比较固定与可优化 skew 的结果；只有可优化 skew 明显降低误差时才采用。误差图箭头按实际残差放大 32 倍，长度随误差大小变化；若 RMS 高于图像对角线的 0.1%（最低 1.5 px），会报错并拒绝保存结果，避免把未收敛的 K/D 当成标定成功。
 
 鱼眼去畸变图默认保留较大的原始视场。把宽视场画面投影到同尺寸的平面图时，四周可能出现黑色无像素区域；这与输入图片被裁切不同。实际画面范围、棋盘格是否完整及直线是否恢复，应同时对照原图和去畸变图。标定时保持分辨率、ISP 设置和对焦状态一致，并尽量在棋盘与相机静止时采集，避免滚动快门运动误差。

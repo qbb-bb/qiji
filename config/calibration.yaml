@@ -1,27 +1,17 @@
 calibration_camera:
   ros__parameters:
-    # "auto" 会沿用原程序的 V4L2 自动发现逻辑，也可指定 /dev/videoN。
-    device: auto
-    # ROS 2 图像输入的启动默认话题；也可直接在界面填写，无需改本文件。
-    # 使用 `ros2 topic list` 中的完整名称，例如 /camera/color/image_raw。
+    # 下列名称只是启动默认值；界面自动发现同类型的 ROS 话题并提供下拉选择。
+    # 默认值未被发现时显示空选项；图像和点云允许任意一路为空。
     topic_input:
       name: ""
-      # type 是 ROS 消息格式，不是话题名。auto 自动识别 Image/CompressedImage；
-      # 也可写 raw（Image）或 compressed（CompressedImage）。
-      type: auto
-      # 同一 ROS 相机的 PointCloud2 启动默认话题。留空时可在界面填写。
-      # “信息流”可单选或同时勾选 RGB 和点云；点云可旋转、缩放。
       pointcloud_name: ""
-      # 可选驱动适配协议：两项同时填写才启用实际硬件启停；留空时只控制本程序订阅。
+      # 可选驱动适配协议：两项同时选择才启用硬件启停；留空时只控制本程序订阅。
       # command: std_msgs/msg/Bool (true 启动、false 停止)
       # status: std_msgs/msg/String (connected/streaming/stopped/disconnected/error:原因)
       control_command: ""
       control_status: ""
-    # 左右红外流默认关闭主动红外投射器，得到无散斑叠加的纯灰度图。
-    disable_ir_emitter: true
     width: 1280
     height: 720
-    fps: 30.0
     # UI 预览无需和采集同频；15 FPS 能显著降低图像拷贝和缩放压力。
     preview_fps: 15.0
     preview_width: 1280

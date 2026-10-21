@@ -31,7 +31,7 @@ inline constexpr char kStreamingService[] = "/calibration/camera/set_streaming";
 inline constexpr char kEmitterService[] = "/calibration/camera/set_ir_emitter_disabled";
 inline constexpr char kCaptureService[] = "/calibration/camera/capture";
 inline constexpr char kSaveService[] = "/calibration/camera/save";
-inline constexpr char kRefreshDevicesService[] = "/calibration/camera/refresh_devices";
+inline constexpr char kRefreshTopicsService[] = "/calibration/camera/refresh_topics";
 inline constexpr char kRunCalibrationService[] = "/calibration/algorithm/run";
 inline constexpr char kCameraNode[] = "/calibration_camera";
 
@@ -41,7 +41,6 @@ inline constexpr char kCameraNode[] = "/calibration_camera";
 namespace extrinsic_input
 {
 inline constexpr char kImageParameter[] = "topic_input.name";
-inline constexpr char kImageTypeParameter[] = "topic_input.type";
 inline constexpr char kCloudParameter[] = "topic_input.pointcloud_name";
 inline constexpr char kCommandParameter[] = "topic_input.control_command";
 inline constexpr char kStatusParameter[] = "topic_input.control_status";
