@@ -47,18 +47,8 @@ Terminal=true
 Categories=Graphics;
 StartupNotify=true"
 
-if [[ -n "${desktop_dir}" ]]; then
-  shortcut_dir="${desktop_dir}"
-else
-  shortcut_dir="${applications_dir}"
-  mkdir -p "${shortcut_dir}"
-fi
-shortcut_path="${shortcut_dir}/${shortcut_name}"
+mkdir -p "${applications_dir}"
+shortcut_path="${applications_dir}/${shortcut_name}"
 printf '%s\n' "${shortcut_body}" > "${shortcut_path}"
 chmod 755 "${shortcut_path}"
 echo "已创建启动图标：${shortcut_path}"
-if [[ "${shortcut_dir}" == "${desktop_dir}" ]]; then
-  if command -v gio >/dev/null 2>&1; then
-    gio set "${shortcut_path}" metadata::trusted true >/dev/null 2>&1 || true
-  fi
-fi
