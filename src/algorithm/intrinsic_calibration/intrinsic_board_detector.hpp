@@ -1,5 +1,7 @@
 #pragma once
 
+#include "board_spec.hpp"
+
 #include <opencv2/core.hpp>
 
 #include <string>
@@ -7,16 +9,6 @@
 
 namespace danmucamera
 {
-struct BoardSpec
-{
-  std::string type{"chessboard"};
-  int columns{7};
-  int rows{6};
-  double spacing{0.06};
-  double marker_length{0.04};
-  int dictionary_id{0};
-};
-
 struct BoardObservation
 {
   std::vector<cv::Point3f> object_points;

@@ -1,5 +1,5 @@
 #include "guided_capture_plan.hpp"
-#include "guided_pose.hpp"
+#include "intrinsic_calibration/intrinsic_guided_pose.hpp"
 #include <QColor>
 #include <algorithm>
 #include <cmath>

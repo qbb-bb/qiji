@@ -30,9 +30,9 @@
 #include <vector>
 
 #include "ros_contract.hpp"
-#include "board_detector.hpp"
-#include "guided_pose.hpp"
-#include "image_quality_analyzer.hpp"
+#include "intrinsic_calibration/intrinsic_board_detector.hpp"
+#include "intrinsic_calibration/intrinsic_guided_pose.hpp"
+#include "intrinsic_calibration/intrinsic_image_quality_analyzer.hpp"
 
 namespace danmucamera
 {
