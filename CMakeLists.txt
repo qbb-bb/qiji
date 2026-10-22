@@ -20,6 +20,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/forms)
 
 include_directories(
+  src
   src/algorithm
   src/bridge
   src/ui
