@@ -1,4 +1,5 @@
 #include "point_cloud_view.hpp"
+#include "preview_layout.hpp"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -13,7 +14,7 @@ namespace danmucamera
 {
 PointCloudView::PointCloudView(QWidget * parent) : QWidget(parent)
 {
-  setMinimumSize(180, 180);
+  setMinimumSize(kPreviewMinimumExtent, kPreviewMinimumExtent);
   setStyleSheet(QStringLiteral("background:#111924;"));
 }
 

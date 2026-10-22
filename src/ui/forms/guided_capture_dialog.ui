@@ -3,7 +3,7 @@
  <class>GuidedCaptureDialog</class>
  <widget class="QDialog" name="GuidedCaptureDialog">
   <property name="geometry"><rect><x>0</x><y>0</y><width>1280</width><height>760</height></rect></property>
-  <property name="minimumSize"><size><width>800</width><height>560</height></size></property>
+  <property name="minimumSize"><size><width>0</width><height>0</height></size></property>
   <property name="windowTitle"><string>自动标定 · 引导拍摄</string></property>
   <property name="styleSheet">
    <string notr="true">QDialog{background:#171c26;color:#e8edf7;}
@@ -51,7 +51,7 @@ QPushButton#stop_guide_button:hover{background:#44536e;}</string>
    <item>
     <widget class="danmucamera::ImageLabel" name="guide_live_view">
      <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>1</horstretch><verstretch>1</verstretch></sizepolicy></property>
-     <property name="minimumSize"><size><width>760</width><height>360</height></size></property>
+     <property name="minimumSize"><size><width>48</width><height>48</height></size></property>
      <property name="text"><string>等待相机视频…</string></property>
     </widget>
    </item>

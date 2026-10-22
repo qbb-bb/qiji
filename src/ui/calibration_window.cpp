@@ -291,9 +291,7 @@ void CalibrationWindow::buildUi()
   home_primary_title_->setObjectName(QStringLiteral("homeStreamTitle"));
   primary_layout->addWidget(home_primary_title_);
   home_live_view_->setParent(home_primary_panel_);
-  home_live_view_->setMinimumSize(180, 180);
   primary_layout->addWidget(home_live_view_, 1);
-  home_capture_view_->setMinimumSize(180, 180);
   home_image_splitter_->insertWidget(0, home_primary_panel_);
   cloud_panel_ = new QWidget(home_image_splitter_);
   cloud_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -344,7 +342,13 @@ void CalibrationWindow::buildUi()
   global_error_button_ = ui_->global_error_button;
   sample_count_label_ = ui_->sample_count_label;
   log_view_ = ui_->log_view;
-  auto * sidebar = new QWidget(ui_->content_splitter);
+  auto * sidebar_scroll = new QScrollArea(ui_->content_splitter);
+  sidebar_scroll->setFrameShape(QFrame::NoFrame);
+  sidebar_scroll->setWidgetResizable(true);
+  sidebar_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  sidebar_scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+  sidebar_scroll->setMinimumSize(0, 0);
+  auto * sidebar = new QWidget;
   auto * sidebar_layout = new QVBoxLayout(sidebar);
   sidebar_layout->setContentsMargins(0, 0, 0, 0);
   sidebar_layout->setSpacing(9);
@@ -357,17 +361,11 @@ void CalibrationWindow::buildUi()
     "background:#222b3a;border:1px solid #344258;border-radius:9px;"
     "padding:8px;color:#dce8fb;"));
   sidebar_layout->addWidget(corner_coverage_label_);
-  calibration_quality_scroll_ = new QScrollArea(sidebar);
-  calibration_quality_scroll_->setFrameShape(QFrame::NoFrame);
-  calibration_quality_scroll_->setWidgetResizable(true);
-  calibration_quality_scroll_->setMinimumHeight(90);
-  calibration_quality_scroll_->setMaximumHeight(248);
-  calibration_quality_scroll_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-  calibration_quality_panel_ = new ImageQualityPanel;
-  calibration_quality_scroll_->setWidget(calibration_quality_panel_);
-  sidebar_layout->addWidget(calibration_quality_scroll_);
-  calibration_quality_scroll_->hide();
-  ui_->content_splitter->addWidget(sidebar);
+  calibration_quality_panel_ = new ImageQualityPanel(sidebar);
+  sidebar_layout->addWidget(calibration_quality_panel_);
+  calibration_quality_panel_->hide();
+  sidebar_scroll->setWidget(sidebar);
+  ui_->content_splitter->addWidget(sidebar_scroll);
   ui_->content_splitter->setStretchFactor(0, 1);
   ui_->content_splitter->setStretchFactor(1, 0);
 
@@ -383,6 +381,7 @@ void CalibrationWindow::buildUi()
   image_splitter_->setSizes({640, 640});
   ui_->content_splitter->setSizes({1080, 260});
   ui_->work_log_splitter->setSizes({590, 150});
+  ui_->work_log_splitter->setHandleWidth(10);
   buildSettingsUi();
   buildHomePage();
   buildCalibrationPage();
@@ -803,7 +802,6 @@ void CalibrationWindow::updateHomeStreamPanels(
       title->setObjectName(QStringLiteral("homeStreamTitle"));
       layout->addWidget(title);
       auto * view = new ImageLabel(panel);
-      view->setMinimumSize(180, 180);
       view->setPlaceholder(signal + QStringLiteral("：等待首帧…"));
       layout->addWidget(view, 1);
       home_image_splitter_->addWidget(panel);
@@ -1095,7 +1093,7 @@ void CalibrationWindow::buildCalibrationPage()
     current_quality_received_ = false;
     corners_valid_ = false;
     accept_button_->setEnabled(false);
-    calibration_quality_scroll_->hide();
+    calibration_quality_panel_->hide();
     transport_.captureForCalibration(currentSettings());
   });
   connect(select_image_button_, &QPushButton::clicked, this, [this]() {
@@ -1389,7 +1387,6 @@ void CalibrationWindow::bindTransport()
       return;
     }
     right_view_->show();
-    setEqualImageSizes(image_splitter_);
     current_corner_preview_ = frame;
     showImage(right_view_, frame);
     if (batch_import_active_) {
@@ -1416,7 +1413,7 @@ void CalibrationWindow::bindTransport()
         maybeSaveCurrentBatchImage();
       } else {
         calibration_quality_panel_->setMetrics(quality, QStringLiteral("本次拍摄"));
-        calibration_quality_scroll_->show();
+        calibration_quality_panel_->show();
         if (quality.board_size_warning) {
           calibration_status_->setText(QStringLiteral(
             "标定板占比不合格：请调整距离后重拍"));
@@ -1433,7 +1430,7 @@ void CalibrationWindow::bindTransport()
       return;
     }
     calibration_quality_panel_->setMetrics(quality, QFileInfo(path).fileName());
-    calibration_quality_scroll_->show();
+    calibration_quality_panel_->show();
     const bool warning = quality.blur_warning || quality.exposure_warning ||
       quality.board_size_warning;
     current->setData(kQualityWarningRole, warning);
@@ -2014,7 +2011,6 @@ void CalibrationWindow::bindTransport()
         auto * preview = new ImageLabel(&dialog);
         preview->setZoomEnabled(true);
         preview->setToolTip(QStringLiteral("滚轮缩放、拖动平移、双击还原"));
-        preview->setMinimumSize(600, 280);
         preview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         const QImage image = guided_preview_cache_.value(worst_path);
         if (!image.isNull()) {preview->setImage(image);}
@@ -2087,7 +2083,7 @@ void CalibrationWindow::startNewCalibrationSession()
   if (guided_active_) {stopGuidedCapture();}
   sample_list_->clear();
   session_image_size_ = QSize();
-  calibration_quality_scroll_->hide();
+  calibration_quality_panel_->hide();
   quality_cache_.clear();
   global_error_image_path_.clear();
   global_error_button_->hide();
@@ -2152,7 +2148,7 @@ void CalibrationWindow::processNextBatchImage()
   batch_preview_received_ = false;
   current_quality_received_ = false;
   current_quality_ = ImageQualityMetrics{};
-  calibration_quality_scroll_->hide();
+  calibration_quality_panel_->hide();
   current_corner_preview_ = QImage();
   imported_frame_pending_ = true;
   imported_frame_active_ = false;
@@ -2209,11 +2205,9 @@ void CalibrationWindow::resetCaptureView()
   result_controls_->hide();
   undistorted_view_->hide();
   result_empty_view_->hide();
-  left_view_->setMinimumSize(180, 150);
-  right_view_->setMinimumSize(180, 150);
   left_view_->show();
   right_view_->show();
-  calibration_quality_scroll_->hide();
+  calibration_quality_panel_->hide();
   current_quality_received_ = false;
   current_quality_ = ImageQualityMetrics{};
   current_corner_preview_ = QImage();
@@ -2504,14 +2498,16 @@ void CalibrationWindow::updateResultViews()
   const bool original = show_original_checkbox_->isChecked();
   const bool error = show_error_checkbox_->isChecked();
   const bool undistorted = show_undistorted_checkbox_->isChecked();
-  left_view_->setMinimumSize(180, 150);
-  right_view_->setMinimumSize(180, 150);
-  undistorted_view_->setMinimumSize(180, 150);
+  const bool empty = !original && !error && !undistorted;
+  const bool visibility_changed = left_view_->isHidden() == original ||
+    right_view_->isHidden() == error ||
+    undistorted_view_->isHidden() == undistorted ||
+    result_empty_view_->isHidden() == empty;
   left_view_->setVisible(original);
   right_view_->setVisible(error);
   undistorted_view_->setVisible(undistorted);
-  result_empty_view_->setVisible(!original && !error && !undistorted);
-  setEqualImageSizes(image_splitter_);
+  result_empty_view_->setVisible(empty);
+  if (visibility_changed) {setEqualImageSizes(image_splitter_);}
   requestSelectedResultImages();
 }
 
@@ -2608,15 +2604,15 @@ void CalibrationWindow::updateCalibrationModeUi()
 void CalibrationWindow::selectSample()
 {
   auto * item = sample_list_->currentItem();
-  if (!item) {calibration_quality_scroll_->hide(); return;}
+  if (!item) {calibration_quality_panel_->hide(); return;}
   const QString original_path = item->data(Qt::UserRole).toString();
   if (quality_cache_.contains(original_path)) {
     calibration_quality_panel_->setMetrics(quality_cache_.value(original_path),
       QFileInfo(original_path).fileName());
-    calibration_quality_scroll_->show();
+    calibration_quality_panel_->show();
   } else {
     calibration_quality_panel_->clear(QStringLiteral("正在分析选中样本"));
-    calibration_quality_scroll_->show();
+    calibration_quality_panel_->show();
     transport_.requestImageQuality(original_path);
   }
   if (calibration_view_ == CalibrationView::Capture) {

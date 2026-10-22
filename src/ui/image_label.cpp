@@ -1,4 +1,5 @@
 #include "image_label.hpp"
+#include "preview_layout.hpp"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -18,7 +19,7 @@ ImageLabel::ImageLabel(QWidget * parent)
 : QLabel(parent)
 {
   setAlignment(Qt::AlignCenter);
-  setMinimumSize(180, 150);
+  setMinimumSize(kPreviewMinimumExtent, kPreviewMinimumExtent);
   setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 }
 

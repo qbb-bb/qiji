@@ -153,7 +153,6 @@ private:
   ImageLabel * home_capture_view_;
   QSplitter * home_image_splitter_;
   ImageQualityPanel * calibration_quality_panel_;
-  QScrollArea * calibration_quality_scroll_{nullptr};
 
   QSpinBox * board_width_spin_;
   QSpinBox * board_height_spin_;

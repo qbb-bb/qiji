@@ -365,7 +365,6 @@ void CalibrationWindow::showGuidedProblem(const QString & reason)
   explanation->setWordWrap(true);
   layout->addWidget(explanation);
   auto * preview = new ImageLabel(&dialog);
-  preview->setMinimumSize(600, 300);
   preview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   if (!current_corner_preview_.isNull()) {preview->setImage(current_corner_preview_);}
   else {preview->clearImage(QStringLiteral("未收到特征点识别图"));}

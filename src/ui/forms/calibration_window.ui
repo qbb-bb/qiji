@@ -310,7 +310,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                       <enum>Qt::Horizontal</enum>
                     </property>
                     <property name="childrenCollapsible">
-                      <bool>false</bool>
+                      <bool>true</bool>
                     </property>
                     <widget class="danmucamera::ImageLabel" name="home_live_view">
                       <property name="placeholder" stdset="0">
@@ -735,7 +735,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                       <enum>Qt::Vertical</enum>
                     </property>
                     <property name="childrenCollapsible">
-                      <bool>false</bool>
+                      <bool>true</bool>
                     </property>
                     <widget class="QSplitter" name="content_splitter">
                       <property name="orientation">
@@ -746,7 +746,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                           <enum>Qt::Horizontal</enum>
                         </property>
                         <property name="childrenCollapsible">
-                          <bool>false</bool>
+                          <bool>true</bool>
                         </property>
                         <widget class="danmucamera::ImageLabel" name="left_view">
                           <property name="placeholder" stdset="0">
@@ -762,7 +762,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                       <widget class="QListWidget" name="sample_list">
                         <property name="minimumSize">
                           <size>
-                            <width>245</width>
+                            <width>0</width>
                             <height>0</height>
                           </size>
                         </property>
@@ -778,7 +778,7 @@ QComboBox#calibration_type_combo{min-width:175px;}
                       <property name="minimumSize">
                         <size>
                           <width>0</width>
-                          <height>70</height>
+                          <height>0</height>
                         </size>
                       </property>
                       <property name="readOnly">

@@ -1,4 +1,5 @@
 #include "result_visualization.hpp"
+#include "preview_layout.hpp"
 #include "ui_result_visualization_dialog.h"
 
 #include <QComboBox>
@@ -164,7 +165,7 @@ bool ResultVisualizationData::load(
 
 ResultVisualizationCanvas::ResultVisualizationCanvas(QWidget * parent) : QWidget(parent)
 {
-  setMinimumSize(300, 250);
+  setMinimumSize(kPreviewMinimumExtent, kPreviewMinimumExtent);
   setMouseTracking(true);
 }
 void ResultVisualizationCanvas::setData(const ResultVisualizationData & data)
