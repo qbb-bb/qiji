@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
-# Create a per-project desktop launcher without replacing existing shortcuts.
+# Replace old qiji launchers with one shortcut for the current project path.
 set -e
 script_path="${BASH_SOURCE[0]}"
 [[ "${script_path}" == */* ]] || script_path="$(command -v "${script_path}")"
 package_root="$(cd "${script_path%/*}/.." && pwd)"
-shortcut_id="$(printf '%s' "${package_root}" | sha256sum | cut -c1-12)"
-shortcut_name="qiji-calibration-${shortcut_id}.desktop"
+shortcut_name="qiji-calibration.desktop"
 applications_dir="${HOME}/.local/share/applications"
-mkdir -p "${applications_dir}"
+desktop_dir=""
+if command -v xdg-user-dir >/dev/null 2>&1; then
+  desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+fi
+if [[ -z "${desktop_dir}" || "${desktop_dir}" == "${HOME}" || ! -d "${desktop_dir}" ]]; then
+  desktop_dir=""
+  for candidate in "${HOME}/桌面" "${HOME}/Desktop"; do
+    if [[ -d "${candidate}" ]]; then desktop_dir="${candidate}"; break; fi
+  done
+fi
+
+# Old versions wrote one shortcut to the menu and another to the desktop.
+# Remove only qiji launchers from those locations before creating the new one.
+shopt -s nullglob
+for location in "${applications_dir}" "${HOME}/桌面" "${HOME}/Desktop" "${desktop_dir}"; do
+  [[ -d "${location}" ]] || continue
+  for old_shortcut in "${location}"/qiji-calibration*.desktop; do
+    rm -- "${old_shortcut}"
+    echo "已删除旧启动图标：${old_shortcut}"
+  done
+done
 
 escape_exec() {
   local value="$1"
@@ -28,30 +47,18 @@ Terminal=true
 Categories=Graphics;
 StartupNotify=true"
 
-write_shortcut() {
-  local target="$1"
-  if [[ -e "${target}" ]]; then
-    echo "保留已有启动图标：${target}"
-    return
-  fi
-  printf '%s\n' "${shortcut_body}" > "${target}"
-  chmod 755 "${target}"
-  echo "已创建启动图标：${target}"
-}
-write_shortcut "${applications_dir}/${shortcut_name}"
-
-desktop_dir=""
-if command -v xdg-user-dir >/dev/null 2>&1; then
-  desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+if [[ -n "${desktop_dir}" ]]; then
+  shortcut_dir="${desktop_dir}"
+else
+  shortcut_dir="${applications_dir}"
+  mkdir -p "${shortcut_dir}"
 fi
-if [[ -z "${desktop_dir}" || "${desktop_dir}" == "${HOME}" ]]; then
-  for candidate in "${HOME}/桌面" "${HOME}/Desktop"; do
-    if [[ -d "${candidate}" ]]; then desktop_dir="${candidate}"; break; fi
-  done
-fi
-if [[ -d "${desktop_dir}" && "${desktop_dir}" != "${HOME}" ]]; then
-  write_shortcut "${desktop_dir}/${shortcut_name}"
+shortcut_path="${shortcut_dir}/${shortcut_name}"
+printf '%s\n' "${shortcut_body}" > "${shortcut_path}"
+chmod 755 "${shortcut_path}"
+echo "已创建启动图标：${shortcut_path}"
+if [[ "${shortcut_dir}" == "${desktop_dir}" ]]; then
   if command -v gio >/dev/null 2>&1; then
-    gio set "${desktop_dir}/${shortcut_name}" metadata::trusted true >/dev/null 2>&1 || true
+    gio set "${shortcut_path}" metadata::trusted true >/dev/null 2>&1 || true
   fi
 fi
