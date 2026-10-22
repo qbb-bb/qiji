@@ -1,4 +1,4 @@
-#include "guided_pose.hpp"
+#include "intrinsic_guided_pose.hpp"
 #include <opencv2/calib3d.hpp>
 #include <algorithm>
 #include <cmath>

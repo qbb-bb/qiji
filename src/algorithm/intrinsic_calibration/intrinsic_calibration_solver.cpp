@@ -1,4 +1,4 @@
-#include "board_detector.hpp"
+#include "intrinsic_board_detector.hpp"
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>

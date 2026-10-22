@@ -1,4 +1,4 @@
-#include "board_detector.hpp"
+#include "intrinsic_board_detector.hpp"
 
 #include <opencv2/aruco.hpp>
 #include <opencv2/aruco/charuco.hpp>

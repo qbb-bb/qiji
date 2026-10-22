@@ -27,12 +27,12 @@ include_directories(
 )
 
 # 2. 编译可执行文件
-add_library(guided_pose STATIC src/algorithm/guided_pose.cpp)
+add_library(guided_pose STATIC src/algorithm/intrinsic_calibration/intrinsic_guided_pose.cpp)
 target_link_libraries(guided_pose ${OpenCV_LIBS})
 
-add_library(board_detector src/algorithm/board_detector.cpp)
+add_library(board_detector src/algorithm/intrinsic_calibration/intrinsic_board_detector.cpp)
 target_link_libraries(board_detector ${OpenCV_LIBS})
-add_executable(calibration_solver src/algorithm/calibration_solver.cpp)
+add_executable(calibration_solver src/algorithm/intrinsic_calibration/intrinsic_calibration_solver.cpp)
 target_link_libraries(calibration_solver board_detector ${OpenCV_LIBS})
 
 # 标定 I/O 仅订阅标准 ROS 话题，不访问相机硬件。
@@ -41,7 +41,7 @@ target_link_libraries(io_node ${OpenCV_LIBS})
 ament_target_dependencies(io_node rclcpp sensor_msgs std_msgs std_srvs)
 
 # 图像质量纯算法模块：不依赖 ROS 2 / Qt，只负责质量计算和报警判断。
-add_library(image_quality_analyzer STATIC src/algorithm/image_quality_analyzer.cpp)
+add_library(image_quality_analyzer STATIC src/algorithm/intrinsic_calibration/intrinsic_image_quality_analyzer.cpp)
 target_link_libraries(image_quality_analyzer ${OpenCV_LIBS})
 
 # 标定桥负责 ROS 消息编排；具体图像质量算法位于 image_quality_analyzer。

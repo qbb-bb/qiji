@@ -1,4 +1,4 @@
-#include "image_quality_analyzer.hpp"
+#include "intrinsic_image_quality_analyzer.hpp"
 
 #include <opencv2/imgproc.hpp>
 
