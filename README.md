@@ -14,7 +14,7 @@ Ubuntu 22.04/24.04 图形桌面可运行：
 
 ## 选择 RGB、深度图和点云
 
-在线接收前先运行发布端，再点击界面“刷新 ROS 话题”。RGB 下拉框列出有发布者的 `sensor_msgs/msg/Image` 或普通 `CompressedImage`，深度图下拉框列出原始 `Image`，点云下拉框列出 `PointCloud2`。三路可任意选一路或多路，但都不可用时“连接”不能按。`config/calibration.yaml` 中的 `topic_input.name`、`topic_input.depth_image_name` 和 `topic_input.pointcloud_name` 只是启动默认值；只有它们已出现在 ROS 图中才自动选中。选择后在“信息流”勾选要显示的信号，点击“连接”再点击“开始接收”。在线单目内参只允许单选 RGB 图像流。3D 点云支持鼠标旋转、缩放及界面中的“叠加帧数”（仅影响预览，默认值在 `calibration_ui.cloud_accumulation_frames`）。
+在线接收前先运行发布端，再点击界面“刷新 ROS 话题”。程序短暂读取 `Image.encoding`，将 8 位彩色/灰度图与 `16UC1`、`32FC1` 深度图分别列入两个下拉框；未收到首帧时按话题名中的 `depth` 暂分组并标记“待确认”。普通 `CompressedImage` 可选为 RGB，`compressedDepth` 不作为普通图像解码。点云下拉框列出 `PointCloud2`。三路可任意选一路或多路，但都不可用时“连接”不能按。`config/calibration.yaml` 中的 `topic_input.name`、`topic_input.depth_image_name` 和 `topic_input.pointcloud_name` 只是启动默认值；只有它们已出现在 ROS 图中才自动选中。选择后在“信息流”勾选要显示的信号，点击“连接”再点击“开始接收”。在线单目内参只允许单选 RGB 图像流。3D 点云支持鼠标旋转、缩放及界面中的“叠加帧数”（仅影响预览，默认值在 `calibration_ui.cloud_accumulation_frames`）。
 
 可选的“驱动启停”两个下拉框分别列出 `std_msgs/msg/Bool` 命令话题和 `std_msgs/msg/String` 状态话题。两项同时选择时，“开始接收”发送 `true` 并等待驱动确认；“停止接收”发送 `false`。两项留空时只控制标定程序的订阅，外部驱动自行运行。连接后变更话题可点击“应用话题”。消息、QoS 和外参预留接口见 [ROS 相机雷达外参输入接口](docs/ROS相机雷达外参输入接口.md)。
 

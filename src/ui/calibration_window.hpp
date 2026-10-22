@@ -70,6 +70,7 @@ private:
   QStringList checkedStreams() const;
   bool canConnectTopics() const;
   void applySelectedStreams();
+  void updateHomeStreamPanels(const QStringList & streams, const QString & primary);
   void updateTopicInputsVisibility();
   void updateExtrinsicInputPanel();
   void selectSample();

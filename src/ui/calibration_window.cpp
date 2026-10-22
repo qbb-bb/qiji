@@ -248,6 +248,7 @@ void CalibrationWindow::buildUi()
     "QWidget#home_page QComboBox { min-height: 30px; }"
     "QWidget#home_page QLabel#homeTitle { font-size: 21px; }"));
   home_primary_panel_ = new QWidget;
+  home_primary_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   home_primary_panel_->setObjectName(QStringLiteral("homeStreamPanel"));
   home_primary_panel_->setStyleSheet(QStringLiteral(
     "QWidget#homeStreamPanel { border: 1px solid #344258; border-radius: 6px; }"
@@ -264,6 +265,7 @@ void CalibrationWindow::buildUi()
   home_capture_view_->setMinimumSize(180, 180);
   home_image_splitter_->insertWidget(0, home_primary_panel_);
   cloud_panel_ = new QWidget(home_image_splitter_);
+  cloud_panel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   cloud_panel_->setObjectName(QStringLiteral("homeStreamPanel"));
   cloud_panel_->setStyleSheet(home_primary_panel_->styleSheet());
   auto * cloud_layout = new QVBoxLayout(cloud_panel_);
@@ -715,15 +717,40 @@ void CalibrationWindow::applySelectedStreams()
       primary.startsWith(QStringLiteral("ir-"));
     updateCalibrationAvailability();
   }
+  updateHomeStreamPanels(requested, primary);
+  updateExtrinsicInputPanel();
+  updateCalibrationAvailability();
+  if (!camera_connected_ || requested == active_streams_) {return;}
+  stream_reconfigure_pending_ = true;
+  stream_restart_pending_ = camera_streaming_;
+  camera_operation_pending_ = true;
+  stream_button_->setEnabled(false);
+  if (camera_streaming_) {transport_.stopCamera();}
+  else {
+    stream_reconfigure_pending_ = false;
+    connected_device_id_ = new_id;
+    active_streams_ = requested;
+    transport_.connectCamera(active_width_, active_height_,
+        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
+        selectedTopic(*cloud_topic_edit_),
+      selectedTopic(*topic_control_command_edit_),
+      selectedTopic(*topic_control_status_edit_));
+  }
+}
+
+void CalibrationWindow::updateHomeStreamPanels(
+  const QStringList & streams, const QString & primary)
+{
   for (auto it = stream_panels_.begin(); it != stream_panels_.end(); ++it) {
-    it.value()->setVisible(requested.contains(it.key()) && it.key() != primary);
+    it.value()->setVisible(streams.contains(it.key()) && it.key() != primary);
   }
   home_primary_panel_->setVisible(primary != QStringLiteral("depth"));
-  cloud_panel_->setVisible(requested.contains(QStringLiteral("depth")));
-  for (const QString & signal : requested) {
+  cloud_panel_->setVisible(streams.contains(QStringLiteral("depth")));
+  for (const QString & signal : streams) {
     if (signal == primary || signal == QStringLiteral("depth")) {continue;}
     if (!stream_views_.contains(signal)) {
       auto * panel = new QWidget(home_image_splitter_);
+      panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
       panel->setObjectName(QStringLiteral("homeStreamPanel"));
       panel->setStyleSheet(home_primary_panel_->styleSheet());
       auto * layout = new QVBoxLayout(panel);
@@ -753,24 +780,6 @@ void CalibrationWindow::applySelectedStreams()
     QStringLiteral("右红外") : QStringLiteral("RGB 彩色"));
   home_live_view_->setPlaceholder(primary + QStringLiteral(" 实时画面"));
   setEqualImageSizes(home_image_splitter_);
-  updateExtrinsicInputPanel();
-  updateCalibrationAvailability();
-  if (!camera_connected_ || requested == active_streams_) {return;}
-  stream_reconfigure_pending_ = true;
-  stream_restart_pending_ = camera_streaming_;
-  camera_operation_pending_ = true;
-  stream_button_->setEnabled(false);
-  if (camera_streaming_) {transport_.stopCamera();}
-  else {
-    stream_reconfigure_pending_ = false;
-    connected_device_id_ = new_id;
-    active_streams_ = requested;
-    transport_.connectCamera(active_width_, active_height_,
-        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
-        selectedTopic(*cloud_topic_edit_),
-      selectedTopic(*topic_control_command_edit_),
-      selectedTopic(*topic_control_status_edit_));
-  }
 }
 
 void CalibrationWindow::updateTopicInputsVisibility()
@@ -1615,19 +1624,24 @@ void CalibrationWindow::bindTransport()
         QStringLiteral("可用信息流\\s+([a-z_,-]+)")).match(message);
       if (match.hasMatch()) {
         const QStringList available = match.captured(1).split(',', Qt::SkipEmptyParts);
-        for (auto it = stream_actions_.begin(); it != stream_actions_.end(); ++it) {
-          const QSignalBlocker blocker(it.value());
-          it.value()->setChecked(available.contains(it.key()));
-        }
-        active_streams_ = available;
-        selected_signal_name_ = available.contains(QStringLiteral("rgb")) ?
-          QStringLiteral("rgb") : available.contains(QStringLiteral("depth_image")) ?
-          QStringLiteral("depth_image") : QStringLiteral("depth");
+        // 服务报告的是所有已配置且有数据的来源；界面仍按用户勾选的流显示。
+        // 不能在重启后把未勾选的流重新选上。
+        active_streams_ = checkedStreams();
+        selected_signal_name_ = active_streams_.contains(QStringLiteral("rgb")) ?
+          QStringLiteral("rgb") : active_streams_.contains(selected_signal_name_) ?
+          selected_signal_name_ : active_streams_.value(0);
         selected_signal_calibratable_ = selected_signal_name_ == QStringLiteral("rgb");
-        home_primary_panel_->setVisible(selected_signal_name_ != QStringLiteral("depth"));
-        cloud_panel_->setVisible(available.contains(QStringLiteral("depth")));
+        updateHomeStreamPanels(active_streams_, selected_signal_name_);
+        QStringList missing;
+        for (const QString & signal : active_streams_) {
+          if (!available.contains(signal)) {missing << signal;}
+        }
         updateExtrinsicInputPanel();
         updateCalibrationAvailability();
+        if (!missing.isEmpty()) {
+          signal_notice_->setText(QStringLiteral("已选流尚无有效数据：%1。请检查话题与编码。")
+            .arg(missing.join(QStringLiteral(", "))));
+        }
       }
     }
     start_stop_button_->setEnabled(camera_connected_);
@@ -2011,17 +2025,18 @@ void CalibrationWindow::showImage(ImageLabel * label, const QImage & image)
 
 void CalibrationWindow::setEqualImageSizes(QSplitter * splitter)
 {
-  // show() 后等下一轮布局再设尺寸，避免隐藏控件刚恢复时仍沿用旧宽度。
+  // 可见流变化后按相同比例重排；isHidden 不受父页面暂时不可见的影响。
   QTimer::singleShot(0, splitter, [splitter]() {
     int visible = 0;
     for (int i = 0; i < splitter->count(); ++i) {
-      if (splitter->widget(i)->isVisible()) {++visible;}
+      if (!splitter->widget(i)->isHidden()) {++visible;}
     }
     if (visible == 0) {return;}
     QList<int> sizes;
-    const int each = std::max(1, splitter->width() / visible);
     for (int i = 0; i < splitter->count(); ++i) {
-      sizes.push_back(splitter->widget(i)->isVisible() ? each : 0);
+      const bool shown = !splitter->widget(i)->isHidden();
+      splitter->setStretchFactor(i, shown ? 1 : 0);
+      sizes.push_back(shown ? 1000 : 0);
     }
     splitter->setSizes(sizes);
   });

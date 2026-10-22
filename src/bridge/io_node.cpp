@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -174,6 +176,60 @@ private:
   void discoverTopics(std_srvs::srv::Trigger::Response & response)
   {
     const auto topics = get_topic_names_and_types();
+    // ROS 图只给出 Image 类型，不包含 encoding。短暂读取首帧后才能把彩色图
+    // 与深度图放进各自的选择框；探测订阅使用独立回调组，避免阻塞发现服务。
+    struct ProbeState {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::map<std::string, std::string> raw_encoding;
+      std::map<std::string, std::string> compressed_format;
+      std::set<std::string> pending;
+    };
+    auto probe = std::make_shared<ProbeState>();
+    std::vector<rclcpp::SubscriptionBase::SharedPtr> probe_subs;
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = callback_group_;
+    const auto qos = rclcpp::SensorDataQoS().keep_last(1);
+    for (const auto & [name, types] : topics) {
+      if (isInternal(name) || count_publishers(name) == 0) {continue;}
+      if (std::find(types.begin(), types.end(), contract::extrinsic_input::kRawImageType) !=
+        types.end()) {
+        const std::string key = "raw:" + name;
+        {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->pending.insert(key);
+        }
+        probe_subs.push_back(create_subscription<sensor_msgs::msg::Image>(
+          name, qos, [probe, name, key](sensor_msgs::msg::Image::ConstSharedPtr message) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            if (probe->pending.erase(key)) {
+              probe->raw_encoding[name] = message->encoding;
+              probe->cv.notify_all();
+            }
+          }, options));
+      }
+      if (std::find(types.begin(), types.end(),
+        contract::extrinsic_input::kCompressedImageType) != types.end()) {
+        const std::string key = "compressed:" + name;
+        {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->pending.insert(key);
+        }
+        probe_subs.push_back(create_subscription<sensor_msgs::msg::CompressedImage>(
+          name, qos, [probe, name, key](
+            sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            if (probe->pending.erase(key)) {
+              probe->compressed_format[name] = message->format;
+              probe->cv.notify_all();
+            }
+          }, options));
+      }
+    }
+    {
+      std::unique_lock<std::mutex> lock(probe->mutex);
+      probe->cv.wait_for(lock, 700ms, [&probe]() {return probe->pending.empty();});
+    }
     for (const auto & [name, types] : topics) {
       if (isInternal(name)) {continue;}
       const bool has_publisher = count_publishers(name) > 0;
@@ -184,9 +240,51 @@ private:
             response.message += name + "|" + name + " [" + label + "]|" + role + "\n";
           }
         };
-      emit(contract::extrinsic_input::kRawImageType, "Image", "rgb");
-      emit(contract::extrinsic_input::kCompressedImageType, "CompressedImage", "rgb");
-      emit(contract::extrinsic_input::kRawImageType, "Image", "depth_image");
+      if (has_publisher && hasType(topics, name,
+        contract::extrinsic_input::kRawImageType)) {
+        std::string encoding;
+        {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          const auto found = probe->raw_encoding.find(name);
+          if (found != probe->raw_encoding.end()) {encoding = found->second;}
+        }
+        const std::string lower_name = [&name]() {
+          std::string value = name;
+          std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+          return value;
+        }();
+        const bool depth_named = lower_name.find("depth") != std::string::npos;
+        const bool depth = encoding == "16UC1" || encoding == "32FC1" ||
+          (encoding == "mono16" && depth_named);
+        const bool color = encoding == "bgr8" || encoding == "rgb8" ||
+          encoding == "bgra8" || encoding == "rgba8" || encoding == "mono8" ||
+          encoding == "8UC1" || encoding == "yuv422" ||
+          encoding == "yuv422_yuy2";
+        if (depth || (encoding.empty() && depth_named)) {
+          response.message += name + "|" + name + " [深度 " +
+            (encoding.empty() ? "待确认" : encoding) + "]|depth_image\n";
+        } else if (color || (encoding.empty() && !depth_named)) {
+          response.message += name + "|" + name + " [图像 " +
+            (encoding.empty() ? "待确认" : encoding) + "]|rgb\n";
+        }
+      }
+      if (has_publisher && hasType(topics, name,
+        contract::extrinsic_input::kCompressedImageType)) {
+        std::string format;
+        {
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          const auto found = probe->compressed_format.find(name);
+          if (found != probe->compressed_format.end()) {format = found->second;}
+        }
+        std::string lower = name + " " + format;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+          [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+        if (lower.find("compresseddepth") == std::string::npos &&
+          lower.find("depth") == std::string::npos) {
+          response.message += name + "|" + name + " [CompressedImage]|rgb\n";
+        }
+      }
       emit(contract::extrinsic_input::kCloudType, "PointCloud2", "depth");
       emit(contract::extrinsic_input::kCameraInfoType, "CameraInfo", "camera_info");
       emit("std_msgs/msg/Bool", "Bool", "command");
