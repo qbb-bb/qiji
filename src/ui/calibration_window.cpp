@@ -15,6 +15,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDebug>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -37,6 +38,9 @@
 #include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QResizeEvent>
+#include <QScrollArea>
+#include <QScreen>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -103,6 +107,13 @@ CalibrationWindow::CalibrationWindow(CalibrationRosClient & transport)
 : transport_(transport), ui_(new ::Ui::CalibrationWindow)
 {
   buildUi();
+  // Keep the top-level window resizable even when controls need more room on
+  // a small or scaled display. Overflow remains reachable with scroll bars.
+  auto * window_scroll = new QScrollArea(this);
+  window_scroll->setFrameShape(QFrame::NoFrame);
+  window_scroll->setWidgetResizable(true);
+  window_scroll->setWidget(takeCentralWidget());
+  setCentralWidget(window_scroll);
   bindTransport();
   transport_timer_ = new QTimer(this);
   connect(transport_timer_, &QTimer::timeout, this, [this]() {
@@ -132,12 +143,32 @@ void CalibrationWindow::closeEvent(QCloseEvent * event)
   QMainWindow::closeEvent(event);
 }
 
+void CalibrationWindow::resizeEvent(QResizeEvent * event)
+{
+  QMainWindow::resizeEvent(event);
+  if (!qEnvironmentVariableIsSet("QIJI_LAYOUT_DEBUG")) {return;}
+  const QSize content_min = centralWidget() ? centralWidget()->minimumSizeHint() : QSize();
+  const QScreen * display = screen();
+  qInfo().noquote() << "[layout] window" << size() << "minimum" << minimumSizeHint()
+    << "content minimum" << content_min << "screen available"
+    << (display ? display->availableGeometry().size() : QSize())
+    << "scale" << (display ? display->devicePixelRatio() : 0.0);
+}
+
 void CalibrationWindow::buildUi()
 {
   ui_->setupUi(this);
   pages_ = ui_->pages;
   home_page_ = ui_->home_page;
   calibration_page_ = ui_->calibration_page;
+  ui_->calibrationRoot->setContentsMargins(10, 6, 10, 8);
+  ui_->calibrationRoot->setSpacing(4);
+  calibration_page_->setStyleSheet(QStringLiteral(
+    "QWidget#calibration_page QPushButton{min-height:30px;padding:0 10px;}"
+    "QWidget#calibration_page QComboBox,"
+    "QWidget#calibration_page QSpinBox,"
+    "QWidget#calibration_page QDoubleSpinBox{min-height:28px;}"
+    "QWidget#calibration_page QLabel#calibrationTitle{font-size:21px;}"));
   calibration_page_->setFocusPolicy(Qt::StrongFocus);
   camera_combo_ = ui_->camera_combo;
   camera_combo_->hide();
@@ -326,10 +357,16 @@ void CalibrationWindow::buildUi()
     "background:#222b3a;border:1px solid #344258;border-radius:9px;"
     "padding:8px;color:#dce8fb;"));
   sidebar_layout->addWidget(corner_coverage_label_);
-  calibration_quality_panel_ = new ImageQualityPanel(sidebar);
-  calibration_quality_panel_->setFixedHeight(248);
-  sidebar_layout->addWidget(calibration_quality_panel_);
-  calibration_quality_panel_->hide();
+  calibration_quality_scroll_ = new QScrollArea(sidebar);
+  calibration_quality_scroll_->setFrameShape(QFrame::NoFrame);
+  calibration_quality_scroll_->setWidgetResizable(true);
+  calibration_quality_scroll_->setMinimumHeight(90);
+  calibration_quality_scroll_->setMaximumHeight(248);
+  calibration_quality_scroll_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+  calibration_quality_panel_ = new ImageQualityPanel;
+  calibration_quality_scroll_->setWidget(calibration_quality_panel_);
+  sidebar_layout->addWidget(calibration_quality_scroll_);
+  calibration_quality_scroll_->hide();
   ui_->content_splitter->addWidget(sidebar);
   ui_->content_splitter->setStretchFactor(0, 1);
   ui_->content_splitter->setStretchFactor(1, 0);
@@ -408,7 +445,10 @@ void CalibrationWindow::buildSettingsUi()
   ui_->guideInitialResolutionTimes->hide();
   guide_initial_width_spin_->hide();
   guide_initial_height_spin_->hide();
-  ui_->initial_intrinsics_group->setTitle(QStringLiteral("初始内参"));
+  ui_->initial_intrinsics_group->setTitle(QString());
+  ui_->initial_intrinsics_group->setFlat(true);
+  ui_->initialIntrinsicsLayout->setContentsMargins(0, 0, 0, 0);
+  ui_->initialIntrinsicsLayout->setSpacing(2);
   manual_initial_widget_ = ui_->manual_initial_widget;
   initial_camera_spins_ = {ui_->initial_fx_spin, ui_->initial_fy_spin,
     ui_->initial_cx_spin, ui_->initial_cy_spin};
@@ -1055,7 +1095,7 @@ void CalibrationWindow::buildCalibrationPage()
     current_quality_received_ = false;
     corners_valid_ = false;
     accept_button_->setEnabled(false);
-    calibration_quality_panel_->hide();
+    calibration_quality_scroll_->hide();
     transport_.captureForCalibration(currentSettings());
   });
   connect(select_image_button_, &QPushButton::clicked, this, [this]() {
@@ -1376,7 +1416,7 @@ void CalibrationWindow::bindTransport()
         maybeSaveCurrentBatchImage();
       } else {
         calibration_quality_panel_->setMetrics(quality, QStringLiteral("本次拍摄"));
-        calibration_quality_panel_->show();
+        calibration_quality_scroll_->show();
         if (quality.board_size_warning) {
           calibration_status_->setText(QStringLiteral(
             "标定板占比不合格：请调整距离后重拍"));
@@ -1393,7 +1433,7 @@ void CalibrationWindow::bindTransport()
       return;
     }
     calibration_quality_panel_->setMetrics(quality, QFileInfo(path).fileName());
-    calibration_quality_panel_->show();
+    calibration_quality_scroll_->show();
     const bool warning = quality.blur_warning || quality.exposure_warning ||
       quality.board_size_warning;
     current->setData(kQualityWarningRole, warning);
@@ -2047,7 +2087,7 @@ void CalibrationWindow::startNewCalibrationSession()
   if (guided_active_) {stopGuidedCapture();}
   sample_list_->clear();
   session_image_size_ = QSize();
-  calibration_quality_panel_->hide();
+  calibration_quality_scroll_->hide();
   quality_cache_.clear();
   global_error_image_path_.clear();
   global_error_button_->hide();
@@ -2112,7 +2152,7 @@ void CalibrationWindow::processNextBatchImage()
   batch_preview_received_ = false;
   current_quality_received_ = false;
   current_quality_ = ImageQualityMetrics{};
-  calibration_quality_panel_->hide();
+  calibration_quality_scroll_->hide();
   current_corner_preview_ = QImage();
   imported_frame_pending_ = true;
   imported_frame_active_ = false;
@@ -2169,11 +2209,11 @@ void CalibrationWindow::resetCaptureView()
   result_controls_->hide();
   undistorted_view_->hide();
   result_empty_view_->hide();
-  left_view_->setMinimumSize(320, 240);
-  right_view_->setMinimumSize(320, 240);
+  left_view_->setMinimumSize(180, 150);
+  right_view_->setMinimumSize(180, 150);
   left_view_->show();
   right_view_->show();
-  calibration_quality_panel_->hide();
+  calibration_quality_scroll_->hide();
   current_quality_received_ = false;
   current_quality_ = ImageQualityMetrics{};
   current_corner_preview_ = QImage();
@@ -2568,15 +2608,15 @@ void CalibrationWindow::updateCalibrationModeUi()
 void CalibrationWindow::selectSample()
 {
   auto * item = sample_list_->currentItem();
-  if (!item) {calibration_quality_panel_->hide(); return;}
+  if (!item) {calibration_quality_scroll_->hide(); return;}
   const QString original_path = item->data(Qt::UserRole).toString();
   if (quality_cache_.contains(original_path)) {
     calibration_quality_panel_->setMetrics(quality_cache_.value(original_path),
       QFileInfo(original_path).fileName());
-    calibration_quality_panel_->show();
+    calibration_quality_scroll_->show();
   } else {
     calibration_quality_panel_->clear(QStringLiteral("正在分析选中样本"));
-    calibration_quality_panel_->show();
+    calibration_quality_scroll_->show();
     transport_.requestImageQuality(original_path);
   }
   if (calibration_view_ == CalibrationView::Capture) {
@@ -2697,6 +2737,9 @@ int main(int argc, char ** argv)
   QApplication app(argc, argv);
   danmucamera::CalibrationRosClient transport;
   danmucamera::CalibrationWindow window(transport);
+  if (const QScreen * screen = QApplication::primaryScreen()) {
+    window.resize(window.size().boundedTo(screen->availableGeometry().size()));
+  }
   QTimer activation_timer;
   QObject::connect(&activation_timer, &QTimer::timeout, &window, [&window]() {
     if (!g_activate_window_requested) {return;}

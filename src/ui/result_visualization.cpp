@@ -431,6 +431,7 @@ ResultVisualizationDialog::ResultVisualizationDialog(
   ui->visual_splitter->setStretchFactor(0, 4);
   ui->visual_splitter->setStretchFactor(1, 1);
   ui->error_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+  ui->error_table->setAlternatingRowColors(false);
   const auto populate_table = [=]() {
     const QSignalBlocker blocker(ui->error_table);
     ui->error_table->setUpdatesEnabled(false);
@@ -465,6 +466,8 @@ ResultVisualizationDialog::ResultVisualizationDialog(
           QString::number(error, 'f', 4)};
         for (int col = 0; col < values.size(); ++col) {
           auto * item = new QTableWidgetItem(values[col]);
+          item->setBackground(QColor(row % 2 == 0 ? "#15212e" : "#223247"));
+          item->setForeground(QColor("#e4edf7"));
           if (col == 0) {
             item->setData(Qt::UserRole, i);
             item->setData(Qt::UserRole + 1, j);

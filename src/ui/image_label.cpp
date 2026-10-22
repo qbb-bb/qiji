@@ -1,6 +1,5 @@
 #include "image_label.hpp"
 
-#include <QPixmap>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
@@ -19,7 +18,7 @@ ImageLabel::ImageLabel(QWidget * parent)
 : QLabel(parent)
 {
   setAlignment(Qt::AlignCenter);
-  setMinimumSize(320, 240);
+  setMinimumSize(180, 150);
   setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 }
 
@@ -105,78 +104,72 @@ void ImageLabel::setGuideOverlay(
 
 void ImageLabel::paintEvent(QPaintEvent * event)
 {
-  if (zoom_enabled_ && !source_.isNull()) {
+  if (!source_.isNull()) {
     QPainter painter(this);
     painter.fillRect(rect(), QColor("#111821"));
     const double fit = std::min(static_cast<double>(width()) / source_.width(),
       static_cast<double>(height()) / source_.height());
-    const double scale = fit * zoom_;
+    const double scale = fit * (zoom_enabled_ ? zoom_ : 1.0);
     const QSizeF display_size(source_.width() * scale, source_.height() * scale);
-    const QRectF target(QPointF((width() - display_size.width()) / 2.0 + pan_.x(),
-      (height() - display_size.height()) / 2.0 + pan_.y()), display_size);
+    const QPointF offset = zoom_enabled_ ? pan_ : QPointF{};
+    const QRectF target(QPointF((width() - display_size.width()) / 2.0 + offset.x(),
+      (height() - display_size.height()) / 2.0 + offset.y()), display_size);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, scale < 1.0);
     painter.drawImage(target, source_);
-    return;
-  }
-  QLabel::paintEvent(event);
-  if (!guide_enabled_ || source_.isNull()) {return;}
-  const QSize scaled = source_.size().scaled(size(), Qt::KeepAspectRatio);
-  const QRectF video((width() - scaled.width()) / 2.0,
-    (height() - scaled.height()) / 2.0, scaled.width(), scaled.height());
-  const auto map_polygon = [&video](const QPolygonF & normalized) {
+    if (!guide_enabled_) {return;}
+    const auto map_polygon = [&target](const QPolygonF & normalized) {
       QPolygonF mapped;
       for (const QPointF & point : normalized) {
-        mapped << QPointF(video.x() + point.x() * video.width(),
-          video.y() + point.y() * video.height());
+        mapped << QPointF(target.x() + point.x() * target.width(),
+          target.y() + point.y() * target.height());
       }
       return mapped;
     };
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::Antialiasing);
-  const QPolygonF target = map_polygon(guide_target_);
-  if (target.size() == 4) {
-    painter.setPen(QPen(guide_ready_ ? guide_style_.ready_color : guide_style_.guide_color,
-      guide_ready_ ? guide_style_.ready_line_width : guide_style_.guide_line_width));
-    painter.setBrush(Qt::NoBrush);
-    QPainterPath outline;
-    for (int i = 0; i < 4; ++i) {
-      const QPointF & before = target[(i + 3) % 4];
-      const QPointF & corner = target[i];
-      const QPointF & after = target[(i + 1) % 4];
-      const double incoming = std::hypot(corner.x() - before.x(), corner.y() - before.y());
-      const double outgoing = std::hypot(after.x() - corner.x(), after.y() - corner.y());
-      const double radius = std::min({guide_style_.corner_radius_px,
-        incoming * 0.25, outgoing * 0.25});
-      const QPointF first = corner + (before - corner) * (radius / incoming);
-      const QPointF last = corner + (after - corner) * (radius / outgoing);
-      if (i == 0) {outline.moveTo(first);} else {outline.lineTo(first);}
-      outline.quadTo(corner, last);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QPolygonF guide_target = map_polygon(guide_target_);
+    if (guide_target.size() == 4) {
+      painter.setPen(QPen(guide_ready_ ? guide_style_.ready_color : guide_style_.guide_color,
+        guide_ready_ ? guide_style_.ready_line_width : guide_style_.guide_line_width));
+      painter.setBrush(Qt::NoBrush);
+      QPainterPath outline;
+      for (int i = 0; i < 4; ++i) {
+        const QPointF & before = guide_target[(i + 3) % 4];
+        const QPointF & corner = guide_target[i];
+        const QPointF & after = guide_target[(i + 1) % 4];
+        const double incoming = std::hypot(corner.x() - before.x(), corner.y() - before.y());
+        const double outgoing = std::hypot(after.x() - corner.x(), after.y() - corner.y());
+        const double radius = std::min({guide_style_.corner_radius_px,
+          incoming * 0.25, outgoing * 0.25});
+        const QPointF first = corner + (before - corner) * (radius / incoming);
+        const QPointF last = corner + (after - corner) * (radius / outgoing);
+        if (i == 0) {outline.moveTo(first);} else {outline.lineTo(first);}
+        outline.quadTo(corner, last);
+      }
+      outline.closeSubpath();
+      painter.drawPath(outline);
     }
-    outline.closeSubpath();
-    painter.drawPath(outline);
+    if (guide_detected_.size() == 4) {
+      painter.setPen(QPen(guide_ready_ ?
+        guide_style_.ready_color : guide_style_.detected_color,
+        guide_style_.detected_line_width));
+      painter.setBrush(Qt::NoBrush);
+      painter.drawPolygon(map_polygon(guide_detected_));
+    }
+    return;
   }
-  if (guide_detected_.size() == 4) {
-    painter.setPen(QPen(guide_ready_ ?
-      guide_style_.ready_color : guide_style_.detected_color,
-      guide_style_.detected_line_width));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPolygon(map_polygon(guide_detected_));
-  }
-
+  QLabel::paintEvent(event);
 }
 
 void ImageLabel::resizeEvent(QResizeEvent * event)
 {
   QLabel::resizeEvent(event);
-  if (zoom_enabled_) {clampPan(); update();} else {renderImage();}
+  if (zoom_enabled_) {clampPan();}
+  update();
 }
 
 void ImageLabel::renderImage()
 {
-  if (source_.isNull() || width() < 2 || height() < 2) {return;}
-  if (zoom_enabled_) {update(); return;}
-  setPixmap(QPixmap::fromImage(source_).scaled(
-    size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  update();
 }
 
 void ImageLabel::wheelEvent(QWheelEvent * event)

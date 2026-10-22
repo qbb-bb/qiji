@@ -8,6 +8,7 @@
 #include <QStringList>
 
 class QCloseEvent;
+class QResizeEvent;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -20,6 +21,7 @@ class QListWidget;
 class QPushButton;
 class QSpinBox;
 class QSplitter;
+class QScrollArea;
 class QStackedWidget;
 class QTextEdit;
 class QTimer;
@@ -45,6 +47,7 @@ public:
 
 protected:
   void closeEvent(QCloseEvent * event) override;
+  void resizeEvent(QResizeEvent * event) override;
 
 private:
   enum class CalibrationView {Capture, Result};
@@ -150,6 +153,7 @@ private:
   ImageLabel * home_capture_view_;
   QSplitter * home_image_splitter_;
   ImageQualityPanel * calibration_quality_panel_;
+  QScrollArea * calibration_quality_scroll_{nullptr};
 
   QSpinBox * board_width_spin_;
   QSpinBox * board_height_spin_;
