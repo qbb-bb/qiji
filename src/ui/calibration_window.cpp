@@ -143,7 +143,7 @@ void CalibrationWindow::buildUi()
   camera_combo_->hide();
   stream_button_ = new QToolButton(home_page_);
   stream_button_->setText(QStringLiteral("信息流 ▾"));
-  stream_button_->setToolTip(QStringLiteral("勾选要显示的图像和点云，可同时选择两路"));
+  stream_button_->setToolTip(QStringLiteral("勾选要显示的 RGB、深度图和 3D 点云，可同时选择"));
   stream_button_->setPopupMode(QToolButton::InstantPopup);
   stream_button_->setMenu(new QMenu(stream_button_));
   ui_->deviceActions->insertWidget(
@@ -186,10 +186,14 @@ void CalibrationWindow::buildUi()
   topic_root->setSpacing(3);
   auto * topic_layout = new QHBoxLayout();
   topic_root->addLayout(topic_layout);
-  topic_layout->addWidget(new QLabel(QStringLiteral("图像话题"), topic_inputs_panel_));
+  topic_layout->addWidget(new QLabel(QStringLiteral("RGB 图像"), topic_inputs_panel_));
   image_topic_edit_ = new QComboBox(topic_inputs_panel_);
-  image_topic_edit_->addItem(QStringLiteral("无图像话题"), QString());
+  image_topic_edit_->addItem(QStringLiteral("无 RGB 图像"), QString());
   topic_layout->addWidget(image_topic_edit_, 1);
+  topic_layout->addWidget(new QLabel(QStringLiteral("深度图"), topic_inputs_panel_));
+  depth_image_topic_edit_ = new QComboBox(topic_inputs_panel_);
+  depth_image_topic_edit_->addItem(QStringLiteral("无深度图"), QString());
+  topic_layout->addWidget(depth_image_topic_edit_, 1);
   topic_layout->addWidget(new QLabel(QStringLiteral("点云话题"), topic_inputs_panel_));
   cloud_topic_edit_ = new QComboBox(topic_inputs_panel_);
   cloud_topic_edit_->addItem(QStringLiteral("无点云话题"), QString());
@@ -265,10 +269,22 @@ void CalibrationWindow::buildUi()
   auto * cloud_layout = new QVBoxLayout(cloud_panel_);
   cloud_layout->setContentsMargins(4, 4, 4, 4);
   cloud_layout->setSpacing(4);
-  auto * cloud_title = new QLabel(QStringLiteral("3D 点云"), cloud_panel_);
+  auto * cloud_header = new QHBoxLayout();
+  cloud_layout->addLayout(cloud_header);
+  auto * cloud_title = new QLabel(QStringLiteral("3D 雷达/相机点云"), cloud_panel_);
   cloud_title->setObjectName(QStringLiteral("homeStreamTitle"));
-  cloud_layout->addWidget(cloud_title);
+  cloud_header->addWidget(cloud_title);
+  cloud_header->addStretch(1);
+  cloud_header->addWidget(new QLabel(QStringLiteral("叠加帧数"), cloud_panel_));
+  auto * cloud_frames = new QSpinBox(cloud_panel_);
+  cloud_frames->setRange(1, 30);
+  cloud_frames->setValue(transport_.cloudAccumulationFrames());
+  cloud_frames->setToolTip(QStringLiteral("仅影响 3D 预览密度；雷达运动时多帧叠加可能拖影"));
+  cloud_header->addWidget(cloud_frames);
   cloud_view_ = new PointCloudView(cloud_panel_);
+  cloud_view_->setAccumulationFrames(cloud_frames->value());
+  connect(cloud_frames, qOverload<int>(&QSpinBox::valueChanged), cloud_view_,
+    [this](int value) {cloud_view_->setAccumulationFrames(value);});
   cloud_layout->addWidget(cloud_view_, 1);
   home_image_splitter_->insertWidget(1, cloud_panel_);
   cloud_panel_->hide();
@@ -584,6 +600,8 @@ void CalibrationWindow::rebuildStreamMenu()
   const bool preserve_checked = is_ros && camera_connected_ &&
     ((previous_checked.contains(QStringLiteral("rgb")) &&
     !selectedTopic(*image_topic_edit_).isEmpty()) ||
+    (previous_checked.contains(QStringLiteral("depth_image")) &&
+    !selectedTopic(*depth_image_topic_edit_).isEmpty()) ||
     (previous_checked.contains(QStringLiteral("depth")) &&
     !selectedTopic(*cloud_topic_edit_).isEmpty()));
   bool checked_any = false;
@@ -591,10 +609,13 @@ void CalibrationWindow::rebuildStreamMenu()
     if (!device.path.startsWith(prefix) || prefix.isEmpty()) {continue;}
     if (is_ros && ((device.signal == QStringLiteral("rgb") &&
       selectedTopic(*image_topic_edit_).isEmpty()) ||
+      (device.signal == QStringLiteral("depth_image") &&
+      selectedTopic(*depth_image_topic_edit_).isEmpty()) ||
       (device.signal == QStringLiteral("depth") &&
       selectedTopic(*cloud_topic_edit_).isEmpty()))) {continue;}
     auto * option = new QCheckBox(device.signal == QStringLiteral("rgb") ?
-      QStringLiteral("RGB 彩色") : device.signal == QStringLiteral("depth") ?
+      QStringLiteral("RGB 彩色") : device.signal == QStringLiteral("depth_image") ?
+      QStringLiteral("深度图") : device.signal == QStringLiteral("depth") ?
       (is_ros ? QStringLiteral("3D 点云") : QStringLiteral("深度")) :
       device.signal == QStringLiteral("ir-left") ?
       QStringLiteral("左红外") : QStringLiteral("右红外"), menu);
@@ -629,7 +650,8 @@ void CalibrationWindow::rebuildStreamMenu()
 QStringList CalibrationWindow::checkedStreams() const
 {
   QStringList result;
-  for (const auto & signal : {QStringLiteral("rgb"), QStringLiteral("ir-left"),
+  for (const auto & signal : {QStringLiteral("rgb"), QStringLiteral("depth_image"),
+    QStringLiteral("ir-left"),
     QStringLiteral("ir-right"), QStringLiteral("depth")}) {
     if (auto * action = stream_actions_.value(signal); action && action->isChecked()) {
       result << signal;
@@ -641,16 +663,20 @@ QStringList CalibrationWindow::checkedStreams() const
 bool CalibrationWindow::canConnectTopics() const
 {
   const QString image = selectedTopic(*image_topic_edit_);
+  const QString depth_image = selectedTopic(*depth_image_topic_edit_);
   const QString cloud = selectedTopic(*cloud_topic_edit_);
   const QString command = selectedTopic(*topic_control_command_edit_);
   const QString status = selectedTopic(*topic_control_status_edit_);
-  if (image.isEmpty() && cloud.isEmpty()) {return false;}
+  if (image.isEmpty() && depth_image.isEmpty() && cloud.isEmpty()) {return false;}
   if ((!image.isEmpty() && image_topic_edit_->findData(image) < 1) ||
+    (!depth_image.isEmpty() && depth_image_topic_edit_->findData(depth_image) < 1) ||
     (!cloud.isEmpty() && cloud_topic_edit_->findData(cloud) < 1)) {return false;}
+  if (!image.isEmpty() && image == depth_image) {return false;}
   if (command.isEmpty() != status.isEmpty()) {return false;}
   if (!command.isEmpty() && command == status) {return false;}
   const auto streams = checkedStreams();
   return (streams.contains(QStringLiteral("rgb")) && !image.isEmpty()) ||
+    (streams.contains(QStringLiteral("depth_image")) && !depth_image.isEmpty()) ||
     (streams.contains(QStringLiteral("depth")) && !cloud.isEmpty());
 }
 
@@ -703,8 +729,8 @@ void CalibrationWindow::applySelectedStreams()
       auto * layout = new QVBoxLayout(panel);
       layout->setContentsMargins(4, 4, 4, 4);
       layout->setSpacing(4);
-      auto * title = new QLabel(signal == QStringLiteral("depth") ?
-        QStringLiteral("深度") : signal == QStringLiteral("ir-left") ?
+      auto * title = new QLabel(signal == QStringLiteral("depth_image") ?
+        QStringLiteral("深度图") : signal == QStringLiteral("ir-left") ?
         QStringLiteral("左红外") : signal == QStringLiteral("ir-right") ?
         QStringLiteral("右红外") : QStringLiteral("RGB 彩色"), panel);
       title->setObjectName(QStringLiteral("homeStreamTitle"));
@@ -720,8 +746,9 @@ void CalibrationWindow::applySelectedStreams()
     }
     stream_panels_[signal]->show();
   }
-  home_primary_title_->setText(primary == QStringLiteral("depth") ?
-    QStringLiteral("深度") : primary == QStringLiteral("ir-left") ?
+  home_primary_title_->setText(primary == QStringLiteral("depth_image") ?
+    QStringLiteral("深度图") : primary == QStringLiteral("depth") ?
+    QStringLiteral("3D 点云") : primary == QStringLiteral("ir-left") ?
     QStringLiteral("左红外") : primary == QStringLiteral("ir-right") ?
     QStringLiteral("右红外") : QStringLiteral("RGB 彩色"));
   home_live_view_->setPlaceholder(primary + QStringLiteral(" 实时画面"));
@@ -739,7 +766,8 @@ void CalibrationWindow::applySelectedStreams()
     connected_device_id_ = new_id;
     active_streams_ = requested;
     transport_.connectCamera(active_width_, active_height_,
-        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
+        selectedTopic(*cloud_topic_edit_),
       selectedTopic(*topic_control_command_edit_),
       selectedTopic(*topic_control_status_edit_));
   }
@@ -786,11 +814,14 @@ void CalibrationWindow::buildHomePage()
     }
     if (camera_connected_) {topic_inputs_dirty_ = true;}
     const QString image = selectedTopic(*image_topic_edit_);
+    const QString depth_image = selectedTopic(*depth_image_topic_edit_);
     const QString cloud = selectedTopic(*cloud_topic_edit_);
     const QString command = selectedTopic(*topic_control_command_edit_);
     const QString status = selectedTopic(*topic_control_status_edit_);
-    const bool valid = (!image.isEmpty() || !cloud.isEmpty()) &&
+    const bool valid = (!image.isEmpty() || !depth_image.isEmpty() || !cloud.isEmpty()) &&
       (image.isEmpty() || image.startsWith('/')) &&
+      (depth_image.isEmpty() || depth_image.startsWith('/')) &&
+      (image.isEmpty() || image != depth_image) &&
       (cloud.isEmpty() || cloud.startsWith('/')) &&
       ((command.isEmpty() && status.isEmpty()) ||
       (!command.isEmpty() && command.startsWith('/') &&
@@ -799,7 +830,7 @@ void CalibrationWindow::buildHomePage()
       !camera_operation_pending_ && valid && !checkedStreams().isEmpty());
     updateExtrinsicInputPanel();
   };
-  for (auto * combo : {image_topic_edit_, cloud_topic_edit_,
+  for (auto * combo : {image_topic_edit_, depth_image_topic_edit_, cloud_topic_edit_,
     topic_control_command_edit_, topic_control_status_edit_}) {
     connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
       [this, topic_changed](int) {
@@ -823,11 +854,12 @@ void CalibrationWindow::buildHomePage()
       startNewCalibrationSession();
     }
     selected_signal_name_ = checkedStreams().contains(QStringLiteral("rgb")) ?
-      QStringLiteral("rgb") : QStringLiteral("depth");
+      QStringLiteral("rgb") : checkedStreams().contains(QStringLiteral("depth_image")) ?
+      QStringLiteral("depth_image") : QStringLiteral("depth");
     selected_signal_calibratable_ = selected_signal_name_ == QStringLiteral("rgb");
     camera_operation_pending_ = true;
     apply_topic_inputs_button_->setEnabled(false);
-    for (auto * edit : {image_topic_edit_, cloud_topic_edit_,
+    for (auto * edit : {image_topic_edit_, depth_image_topic_edit_, cloud_topic_edit_,
       topic_control_command_edit_, topic_control_status_edit_}) {
       edit->setEnabled(false);
     }
@@ -844,7 +876,8 @@ void CalibrationWindow::buildHomePage()
         selected_signal_name_;
       active_streams_ = checkedStreams();
       transport_.connectCamera(active_width_, active_height_,
-        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
+        selectedTopic(*cloud_topic_edit_),
         selectedTopic(*topic_control_command_edit_),
         selectedTopic(*topic_control_status_edit_));
     }
@@ -890,7 +923,7 @@ void CalibrationWindow::buildHomePage()
   connect(connect_button_, &QPushButton::clicked, this, [this]() {
     if (camera_operation_pending_ || !canConnectTopics()) {
       connect_button_->setEnabled(false);
-      signal_notice_->setText(QStringLiteral("至少选择一路当前可发现的图像或点云话题后才能连接。"));
+      signal_notice_->setText(QStringLiteral("至少选择一路当前可发现的 RGB、深度图或点云话题后才能连接。"));
       return;
     }
     camera_operation_pending_ = true;
@@ -902,7 +935,8 @@ void CalibrationWindow::buildHomePage()
     active_width_ = resolution.width();
     active_height_ = resolution.height();
     transport_.connectCamera(active_width_, active_height_,
-        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
+        selectedTopic(*cloud_topic_edit_),
       selectedTopic(*topic_control_command_edit_),
       selectedTopic(*topic_control_status_edit_));
   });
@@ -1192,7 +1226,12 @@ void CalibrationWindow::bindTransport()
   transport_.onFrame = [this](const QImage & frame) {
     latest_frame_ = frame;
     if (pages_->currentWidget() == home_page_) {
-      showImage(home_live_view_, frame);
+      if (selected_signal_name_ == QStringLiteral("rgb")) {
+        showImage(home_live_view_, frame);
+      } else if (auto * view = stream_views_.value(QStringLiteral("rgb"));
+        view && stream_panels_.value(QStringLiteral("rgb"))->isVisible()) {
+        showImage(view, frame);
+      }
     }
     if (guided_active_ && guided_live_view_) {
       showImage(guided_live_view_, frame);
@@ -1205,7 +1244,10 @@ void CalibrationWindow::bindTransport()
   };
   transport_.onStreamFrame = [this](const QString & signal, const QImage & frame) {
     if (!camera_streaming_) {return;}
-    if (signal == selected_signal_name_) {return;}
+    if (signal == selected_signal_name_) {
+      if (pages_->currentWidget() == home_page_) {showImage(home_live_view_, frame);}
+      return;
+    }
     if (auto * view = stream_views_.value(signal);
       view && stream_panels_.value(signal)->isVisible()) {
       showImage(view, frame);
@@ -1214,15 +1256,22 @@ void CalibrationWindow::bindTransport()
   transport_.onStreamCloud = [this](const std::vector<QVector3D> & points) {
     if (camera_streaming_ && cloud_panel_->isVisible()) {cloud_view_->setPoints(points);}
   };
-  transport_.onTopicDefaults = [this](const QString & image, const QString & cloud) {
+  transport_.onTopicDefaults = [this](const QString & image,
+    const QString & depth_image, const QString & cloud) {
     default_image_topic_ = image;
+    default_depth_image_topic_ = depth_image;
     default_cloud_topic_ = cloud;
     if (!topic_selection_touched_) {
       const QSignalBlocker image_blocker(image_topic_edit_);
+      const QSignalBlocker depth_image_blocker(depth_image_topic_edit_);
       const QSignalBlocker cloud_blocker(cloud_topic_edit_);
       const int image_row = image_topic_edit_->findData(image);
+      const int depth_image_row = depth_image_topic_edit_->findData(depth_image);
       const int cloud_row = cloud_topic_edit_->findData(cloud);
       if (image_row >= 0 && !image.isEmpty()) {image_topic_edit_->setCurrentIndex(image_row);}
+      if (depth_image_row >= 0 && !depth_image.isEmpty()) {
+        depth_image_topic_edit_->setCurrentIndex(depth_image_row);
+      }
       if (cloud_row >= 0 && !cloud.isEmpty()) {cloud_topic_edit_->setCurrentIndex(cloud_row);}
       if (!camera_connected_) {
         rebuildStreamMenu();
@@ -1431,8 +1480,10 @@ void CalibrationWindow::bindTransport()
       const int row = combo->findData(wanted);
       combo->setCurrentIndex(row > 0 ? row : 0);
     };
-    fill(image_topic_edit_, QStringLiteral("rgb"), QStringLiteral("无图像话题"),
+    fill(image_topic_edit_, QStringLiteral("rgb"), QStringLiteral("无 RGB 图像"),
       default_image_topic_);
+    fill(depth_image_topic_edit_, QStringLiteral("depth_image"),
+      QStringLiteral("无深度图"), default_depth_image_topic_);
     fill(cloud_topic_edit_, QStringLiteral("depth"), QStringLiteral("无点云话题"),
       default_cloud_topic_);
     fill(topic_control_command_edit_, QStringLiteral("command"),
@@ -1445,11 +1496,17 @@ void CalibrationWindow::bindTransport()
     const bool has_image = std::any_of(topics.begin(), topics.end(), [](const auto & item) {
       return item.signal == QStringLiteral("rgb");
     });
+    const bool has_depth_image = std::any_of(topics.begin(), topics.end(), [](const auto & item) {
+      return item.signal == QStringLiteral("depth_image");
+    });
     const bool has_cloud = std::any_of(topics.begin(), topics.end(), [](const auto & item) {
       return item.signal == QStringLiteral("depth");
     });
     if (has_image) {available_streams_.push_back({QStringLiteral("ros-topic:configured:rgb"),
       QStringLiteral("图像"), QStringLiteral("rgb")});}
+    if (has_depth_image) {available_streams_.push_back({
+      QStringLiteral("ros-topic:configured:depth_image"),
+      QStringLiteral("深度图"), QStringLiteral("depth_image")});}
     if (has_cloud) {available_streams_.push_back({QStringLiteral("ros-topic:configured:depth"),
       QStringLiteral("点云"), QStringLiteral("depth")});}
     selected_backend_name_ = QStringLiteral("ros-topic");
@@ -1463,8 +1520,8 @@ void CalibrationWindow::bindTransport()
     connect_button_->setEnabled(!camera_connected_ && canConnectTopics());
     updateTopicInputsVisibility();
     updateCalibrationAvailability();
-    if (!has_image && !has_cloud) {
-      signal_notice_->setText(QStringLiteral("未发现图像或点云话题。请启动发布端并刷新。"));
+    if (!has_image && !has_depth_image && !has_cloud) {
+      signal_notice_->setText(QStringLiteral("未发现 RGB、深度图或点云话题。请启动发布端并刷新。"));
     }
     refresh_button_->setEnabled(true);
   };
@@ -1495,6 +1552,7 @@ void CalibrationWindow::bindTransport()
     calibration_connection_status_->setStyleSheet(connection_status_->styleSheet());
     camera_combo_->setEnabled(!connected);
     image_topic_edit_->setEnabled(true);
+    depth_image_topic_edit_->setEnabled(true);
     cloud_topic_edit_->setEnabled(true);
     topic_control_command_edit_->setEnabled(true);
     topic_control_status_edit_->setEnabled(true);
@@ -1554,7 +1612,7 @@ void CalibrationWindow::bindTransport()
     camera_streaming_ = streaming;
     if (streaming && selected_backend_name_ == QStringLiteral("ros-topic")) {
       const auto match = QRegularExpression(
-        QStringLiteral("可用信息流\\s+([a-z,-]+)")).match(message);
+        QStringLiteral("可用信息流\\s+([a-z_,-]+)")).match(message);
       if (match.hasMatch()) {
         const QStringList available = match.captured(1).split(',', Qt::SkipEmptyParts);
         for (auto it = stream_actions_.begin(); it != stream_actions_.end(); ++it) {
@@ -1563,9 +1621,10 @@ void CalibrationWindow::bindTransport()
         }
         active_streams_ = available;
         selected_signal_name_ = available.contains(QStringLiteral("rgb")) ?
-          QStringLiteral("rgb") : QStringLiteral("depth");
+          QStringLiteral("rgb") : available.contains(QStringLiteral("depth_image")) ?
+          QStringLiteral("depth_image") : QStringLiteral("depth");
         selected_signal_calibratable_ = selected_signal_name_ == QStringLiteral("rgb");
-        home_primary_panel_->setVisible(selected_signal_calibratable_);
+        home_primary_panel_->setVisible(selected_signal_name_ != QStringLiteral("depth"));
         cloud_panel_->setVisible(available.contains(QStringLiteral("depth")));
         updateExtrinsicInputPanel();
         updateCalibrationAvailability();
@@ -1632,7 +1691,8 @@ void CalibrationWindow::bindTransport()
       connected_device_id_ = new_id;
       active_streams_ = checkedStreams();
       transport_.connectCamera(active_width_, active_height_,
-        selectedTopic(*image_topic_edit_), selectedTopic(*cloud_topic_edit_),
+        selectedTopic(*image_topic_edit_), selectedTopic(*depth_image_topic_edit_),
+        selectedTopic(*cloud_topic_edit_),
         selectedTopic(*topic_control_command_edit_),
         selectedTopic(*topic_control_status_edit_));
     }
@@ -1641,7 +1701,7 @@ void CalibrationWindow::bindTransport()
     camera_operation_pending_ = false;
     stream_reconfigure_pending_ = false;
     stream_restart_pending_ = false;
-    for (auto * edit : {image_topic_edit_, cloud_topic_edit_,
+    for (auto * edit : {image_topic_edit_, depth_image_topic_edit_, cloud_topic_edit_,
       topic_control_command_edit_, topic_control_status_edit_}) {
       edit->setEnabled(true);
     }
@@ -2482,6 +2542,9 @@ void CalibrationWindow::updateCalibrationModeUi()
     capture_button_->setVisible(online);
     accept_button_->setVisible(online);
     retake_button_->setVisible(online);
+    left_view_->setVisible(online);
+    right_view_->show();
+    setEqualImageSizes(image_splitter_);
   }
   supplement_button_->setText(online ? QStringLiteral("补拍") :
     QStringLiteral("继续导入图片"));
@@ -2534,7 +2597,7 @@ void CalibrationWindow::handleCameraDisconnected(const QString & message)
   camera_streaming_ = false;
   topic_inputs_dirty_ = false;
   apply_topic_inputs_button_->setEnabled(false);
-  for (auto * edit : {image_topic_edit_, cloud_topic_edit_,
+  for (auto * edit : {image_topic_edit_, depth_image_topic_edit_, cloud_topic_edit_,
     topic_control_command_edit_, topic_control_status_edit_}) {
     edit->setEnabled(true);
   }

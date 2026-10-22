@@ -19,160 +19,224 @@
 
 namespace
 {
-struct Settings
-{
-  danmucamera::BoardSpec board;
-  std::string camera_model;
-  std::string distortion_model;
-  bool automatic_initial{true};
-  double fx{0}, fy{0}, cx{0}, cy{0};
-  std::vector<double> initial_distortion;
-};
+  struct Settings
+  {
+    danmucamera::BoardSpec board;
+    std::string camera_model;
+    std::string distortion_model;
+    bool automatic_initial{true};
+    double fx{0}, fy{0}, cx{0}, cy{0};
+    std::vector<double> initial_distortion;
+  };
 
-cv::Mat initialCamera(const cv::Size & size, const Settings & settings,
-  const std::vector<std::vector<cv::Point3f>> & objects,
-  const std::vector<std::vector<cv::Point2f>> & images)
-{
-  if (!settings.automatic_initial) {
-    if (settings.fx <= 0 || settings.fy <= 0) {
-      throw std::runtime_error("手动初值的 fx、fy 必须大于零");
+  std::vector<double> fisheyeFocalCandidates(const cv::Size &size,
+                                             const std::vector<std::vector<cv::Point3f>> &objects,
+                                             const std::vector<std::vector<cv::Point2f>> &images)
+  {
+    const double dimension = std::max(size.width, size.height);
+    // A broad angular-scale search is independent of lens specifications.
+    // Each seed is optimized against the observed calibration corners below.
+    std::vector<double> candidates{0.5 * dimension};
+    try
+    {
+      const cv::Mat homography_K = cv::initCameraMatrix2D(objects, images, size, 0);
+      const double fx = homography_K.at<double>(0, 0);
+      const double fy = homography_K.at<double>(1, 1);
+      const double ratio = fx / fy;
+      const double focal = std::sqrt(fx * fy);
+      if (std::isfinite(focal) && focal >= 0.15 * dimension &&
+          focal <= 8.0 * dimension && ratio >= 0.4 && ratio <= 2.5)
+      {
+        candidates.insert(candidates.begin(), focal);
+        std::cout << "角点单应性候选焦距: " << focal << " px\n";
+      }
+      else
+      {
+        std::cout << "角点单应性初值不稳定，使用宽范围多起点搜索\n";
+      }
     }
-    return (cv::Mat_<double>(3, 3) << settings.fx, 0, settings.cx,
-      0, settings.fy, settings.cy, 0, 0, 1);
+    catch (const cv::Exception &)
+    {
+      std::cout << "角点单应性不可用，使用宽范围多起点搜索\n";
+    }
+    for (const double ratio : {0.20, 0.30, 0.45, 0.675, 1.0,
+                               1.5, 2.25, 3.375, 5.06})
+    {
+      const double focal = dimension * ratio;
+      if (std::none_of(candidates.begin(), candidates.end(), [focal](double prior)
+                       { return std::abs(std::log(prior / focal)) < 0.07; }))
+      {
+        candidates.push_back(focal);
+      }
+    }
+    return candidates;
   }
-  if (settings.camera_model == "fisheye") {
-    // A fisheye focal length cannot be inferred by the pinhole homography
-    // initializer. Use a middle-of-range seed; automatic calibration below
-    // tries several focal lengths and keeps the lowest reprojection error.
-    const double focal = std::max(size.width, size.height) * 0.5;
-    return (cv::Mat_<double>(3, 3) << focal, 0, (size.width - 1) / 2.0,
-      0, focal, (size.height - 1) / 2.0, 0, 0, 1);
+
+  cv::Mat initialCamera(const cv::Size &size, const Settings &settings,
+                        const std::vector<std::vector<cv::Point3f>> &objects,
+                        const std::vector<std::vector<cv::Point2f>> &images, double fisheye_seed)
+  {
+    if (!settings.automatic_initial)
+    {
+      if (settings.fx <= 0 || settings.fy <= 0)
+      {
+        throw std::runtime_error("手动初值的 fx、fy 必须大于零");
+      }
+      return (cv::Mat_<double>(3, 3) << settings.fx, 0, settings.cx,
+              0, settings.fy, settings.cy, 0, 0, 1);
+    }
+    if (settings.camera_model == "fisheye")
+    {
+      return (cv::Mat_<double>(3, 3) << fisheye_seed, 0, (size.width - 1) / 2.0,
+              0, fisheye_seed, (size.height - 1) / 2.0, 0, 0, 1);
+    }
+    return cv::initCameraMatrix2D(objects, images, size, 0);
   }
-  return cv::initCameraMatrix2D(objects, images, size, 0);
-}
 
-std::string pathString(const std::filesystem::path & path)
-{
-  return std::filesystem::absolute(path).string();
-}
-
-// Subpixel residuals are enlarged uniformly; arrow length carries magnitude.
-constexpr double kResidualArrowMagnification = 32.0;
-
-cv::Scalar directionColor(const cv::Point2f & residual)
-{
-  const double angle = std::atan2(residual.y, residual.x);
-  const unsigned char hue = static_cast<unsigned char>(
-    std::lround((angle + CV_PI) * 179.0 / (2.0 * CV_PI)));
-  cv::Mat hsv(1, 1, CV_8UC3, cv::Scalar(hue, 225, 245));
-  cv::Mat bgr;
-  cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
-  const auto color = bgr.at<cv::Vec3b>(0, 0);
-  return cv::Scalar(color[0], color[1], color[2]);
-}
-
-std::string svgColor(const cv::Scalar & bgr)
-{
-  std::ostringstream out;
-  out << '#' << std::hex << std::setfill('0')
-      << std::setw(2) << static_cast<int>(bgr[2])
-      << std::setw(2) << static_cast<int>(bgr[1])
-      << std::setw(2) << static_cast<int>(bgr[0]);
-  return out.str();
-}
-
-void drawArrow(cv::Mat & image, const cv::Point2f & origin,
-  const cv::Point2f & residual, double image_scale, const std::string & label)
-{
-  const cv::Point2f start = origin * image_scale;
-  const double length = cv::norm(residual);
-  const cv::Scalar color = length > 1e-9 ? directionColor(residual) :
-    cv::Scalar(175, 175, 175);
-  const cv::Point2f end = start + residual *
-    static_cast<float>(kResidualArrowMagnification * image_scale);
-  if (length > 1e-9) {
-    cv::arrowedLine(image, start, end, color, std::max(2, cvRound(image_scale)),
-      cv::LINE_AA, 0, 0.32);
-  } else {
-    cv::circle(image, start, std::max(2, cvRound(image_scale * 2)), color, -1, cv::LINE_AA);
+  std::string pathString(const std::filesystem::path &path)
+  {
+    return std::filesystem::absolute(path).string();
   }
-  if (!label.empty()) {
-    const cv::Point label_origin(cvRound(end.x + 3 * image_scale),
-      cvRound(end.y - 3 * image_scale));
-    const double font_scale = std::max(0.38, 0.38 * image_scale);
-    cv::putText(image, label, label_origin, cv::FONT_HERSHEY_SIMPLEX,
-      font_scale, cv::Scalar(0, 0, 0), std::max(2, cvRound(3 * image_scale)), cv::LINE_AA);
-    cv::putText(image, label, label_origin, cv::FONT_HERSHEY_SIMPLEX,
-      font_scale, color, std::max(1, cvRound(image_scale)), cv::LINE_AA);
-  }
-}
 
-void svgHeader(std::ostream & out, const cv::Size & size)
-{
-  out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 "
-      << size.width << ' ' << size.height << "\">\n"
-      << "<rect width=\"100%\" height=\"100%\" fill=\"#101923\"/>\n"
-      << "<text x=\"18\" y=\"28\" fill=\"#ffffff\" font-size=\"16\">"
-      << "Residual arrows: 32x pixel error</text>\n";
-  for (int step = 1; step < 10; ++step) {
-    const double x = size.width * step / 10.0;
-    const double y = size.height * step / 10.0;
-    out << "<path d=\"M" << x << " 0V" << size.height << " M0 " << y << 'H'
-        << size.width << "\" stroke=\"#263340\" stroke-width=\"0.6\"/>\n";
-  }
-}
+  // Every nonzero residual gets a legible direction marker. The numeric label
+  // and visualization_data.tsv retain its true magnitude, including subpixels.
+  constexpr double kResidualArrowLength = 30.0;
 
-void svgArrow(std::ostream & out, const cv::Point2f & origin,
-  const cv::Point2f & residual, double opacity, const std::string & label)
-{
-  const double length = cv::norm(residual);
-  const cv::Point2f end = origin + residual *
-    static_cast<float>(kResidualArrowMagnification);
-  const std::string color = length > 1e-9 ?
-    svgColor(directionColor(residual)) : "#aaaaaa";
-  out << "<g stroke=\"" << color << "\" fill=\"" << color
-      << "\" opacity=\"" << opacity << "\">";
-  if (length > 1e-9) {
-    const cv::Point2f unit = residual * static_cast<float>(1.0 / length);
-    const cv::Point2f normal(-unit.y, unit.x);
-    const cv::Point2f a = end - unit * 6.0f + normal * 2.7f;
-    const cv::Point2f b = end - unit * 6.0f - normal * 2.7f;
-    out << "<path d=\"M" << origin.x << ' ' << origin.y << 'L' << end.x << ' '
-        << end.y << "\" stroke-width=\"1.5\"/>"
-        << "<path d=\"M" << end.x << ' ' << end.y << 'L' << a.x << ' ' << a.y
-        << 'L' << b.x << ' ' << b.y << "Z\"/>";
-  } else {
-    out << "<circle cx=\"" << origin.x << "\" cy=\"" << origin.y
-        << "\" r=\"2\"/>";
+  cv::Scalar directionColor(const cv::Point2f &residual)
+  {
+    const double angle = std::atan2(residual.y, residual.x);
+    const unsigned char hue = static_cast<unsigned char>(
+        std::lround((angle + CV_PI) * 179.0 / (2.0 * CV_PI)));
+    cv::Mat hsv(1, 1, CV_8UC3, cv::Scalar(hue, 225, 245));
+    cv::Mat bgr;
+    cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
+    const auto color = bgr.at<cv::Vec3b>(0, 0);
+    return cv::Scalar(color[0], color[1], color[2]);
   }
-  out << "</g>\n";
-  if (!label.empty()) {
-    out << "<text x=\"" << end.x + 3 << "\" y=\"" << end.y - 3
-        << "\" font-size=\"10\" font-family=\"sans-serif\" fill=\""
-        << color << "\" stroke=\"#101923\" stroke-width=\"2.2\""
-        << " paint-order=\"stroke\">" << label << "</text>\n";
-  }
-}
 
-void printMatrix(const cv::Mat & matrix)
-{
-  std::cout << "[";
-  for (int row = 0; row < matrix.rows; ++row) {
-    if (row) {std::cout << "; ";}
-    for (int col = 0; col < matrix.cols; ++col) {
-      if (col) {std::cout << ", ";}
-      std::cout << std::setprecision(12) << matrix.at<double>(row, col);
+  std::string svgColor(const cv::Scalar &bgr)
+  {
+    std::ostringstream out;
+    out << '#' << std::hex << std::setfill('0')
+        << std::setw(2) << static_cast<int>(bgr[2])
+        << std::setw(2) << static_cast<int>(bgr[1])
+        << std::setw(2) << static_cast<int>(bgr[0]);
+    return out.str();
+  }
+
+  void drawArrow(cv::Mat &image, const cv::Point2f &origin,
+                 const cv::Point2f &residual, double image_scale, const std::string &label)
+  {
+    const cv::Point2f start = origin * image_scale;
+    const double length = cv::norm(residual);
+    const cv::Scalar color = length > 1e-9 ? directionColor(residual) : cv::Scalar(175, 175, 175);
+    const cv::Point2f end = length > 1e-9 ? start + residual *
+                                                        static_cast<float>(kResidualArrowLength * image_scale / length)
+                                          : start;
+    if (length > 1e-9)
+    {
+      cv::arrowedLine(image, start, end, color, std::max(2, cvRound(image_scale)),
+                      cv::LINE_AA, 0, 0.32);
+    }
+    else
+    {
+      cv::circle(image, start, std::max(2, cvRound(image_scale * 2)), color, -1, cv::LINE_AA);
+    }
+    if (!label.empty())
+    {
+      const cv::Point label_origin(cvRound(end.x + 3 * image_scale),
+                                   cvRound(end.y - 3 * image_scale));
+      const double font_scale = std::max(0.38, 0.38 * image_scale);
+      cv::putText(image, label, label_origin, cv::FONT_HERSHEY_SIMPLEX,
+                  font_scale, cv::Scalar(0, 0, 0), std::max(2, cvRound(3 * image_scale)), cv::LINE_AA);
+      cv::putText(image, label, label_origin, cv::FONT_HERSHEY_SIMPLEX,
+                  font_scale, color, std::max(1, cvRound(image_scale)), cv::LINE_AA);
     }
   }
-  std::cout << "]\n";
-}
-}  // namespace
 
-int main(int argc, char ** argv)
+  void svgHeader(std::ostream &out, const cv::Size &size)
+  {
+    out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 "
+        << size.width << ' ' << size.height << "\">\n"
+        << "<rect width=\"100%\" height=\"100%\" fill=\"#101923\"/>\n"
+        << "<text x=\"18\" y=\"28\" fill=\"#ffffff\" font-size=\"16\">"
+        << "Equal-length arrows: direction; labels: pixel error</text>\n";
+    for (int step = 1; step < 10; ++step)
+    {
+      const double x = size.width * step / 10.0;
+      const double y = size.height * step / 10.0;
+      out << "<path d=\"M" << x << " 0V" << size.height << " M0 " << y << 'H'
+          << size.width << "\" stroke=\"#263340\" stroke-width=\"0.6\"/>\n";
+    }
+  }
+
+  void svgArrow(std::ostream &out, const cv::Point2f &origin,
+                const cv::Point2f &residual, double opacity, const std::string &label)
+  {
+    const double length = cv::norm(residual);
+    const cv::Point2f end = length > 1e-9 ? origin + residual *
+                                                         static_cast<float>(kResidualArrowLength / length)
+                                          : origin;
+    const std::string color = length > 1e-9 ? svgColor(directionColor(residual)) : "#aaaaaa";
+    out << "<g stroke=\"" << color << "\" fill=\"" << color
+        << "\" opacity=\"" << opacity << "\">";
+    if (length > 1e-9)
+    {
+      const cv::Point2f unit = residual * static_cast<float>(1.0 / length);
+      const cv::Point2f normal(-unit.y, unit.x);
+      const cv::Point2f a = end - unit * 6.0f + normal * 2.7f;
+      const cv::Point2f b = end - unit * 6.0f - normal * 2.7f;
+      out << "<path d=\"M" << origin.x << ' ' << origin.y << 'L' << end.x << ' '
+          << end.y << "\" stroke-width=\"1.5\"/>"
+          << "<path d=\"M" << end.x << ' ' << end.y << 'L' << a.x << ' ' << a.y
+          << 'L' << b.x << ' ' << b.y << "Z\"/>";
+    }
+    else
+    {
+      out << "<circle cx=\"" << origin.x << "\" cy=\"" << origin.y
+          << "\" r=\"2\"/>";
+    }
+    out << "</g>\n";
+    if (!label.empty())
+    {
+      out << "<text x=\"" << end.x + 3 << "\" y=\"" << end.y - 3
+          << "\" font-size=\"10\" font-family=\"sans-serif\" fill=\""
+          << color << "\" stroke=\"#101923\" stroke-width=\"2.2\""
+          << " paint-order=\"stroke\">" << label << "</text>\n";
+    }
+  }
+
+  void printMatrix(const cv::Mat &matrix)
+  {
+    std::cout << "[";
+    for (int row = 0; row < matrix.rows; ++row)
+    {
+      if (row)
+      {
+        std::cout << "; ";
+      }
+      for (int col = 0; col < matrix.cols; ++col)
+      {
+        if (col)
+        {
+          std::cout << ", ";
+        }
+        std::cout << std::setprecision(12) << matrix.at<double>(row, col);
+      }
+    }
+    std::cout << "]\n";
+  }
+} // namespace
+
+int main(int argc, char **argv)
 {
-  try {
+  try
+  {
     // 清单、输出目录、板型/尺寸/间距、ChArUco 设置、相机/畸变模型、初值模式、K(4)、D(8)。
-    if (argc != 24) {throw std::runtime_error("标定求解器参数数量不正确");}
+    if (argc != 24)
+    {
+      throw std::runtime_error("标定求解器参数数量不正确");
+    }
     const std::filesystem::path manifest_path(argv[1]);
     const std::filesystem::path output_dir(argv[2]);
     Settings settings;
@@ -189,175 +253,238 @@ int main(int argc, char ** argv)
     settings.fy = std::stod(argv[13]);
     settings.cx = std::stod(argv[14]);
     settings.cy = std::stod(argv[15]);
-    for (int i = 16; i < 24; ++i) {settings.initial_distortion.push_back(std::stod(argv[i]));}
-    if (settings.camera_model != "pinhole" && settings.camera_model != "fisheye") {
+    for (int i = 16; i < 24; ++i)
+    {
+      settings.initial_distortion.push_back(std::stod(argv[i]));
+    }
+    if (settings.camera_model != "pinhole" && settings.camera_model != "fisheye")
+    {
       throw std::runtime_error("未知相机模型");
     }
     if (settings.camera_model == "fisheye" &&
-      settings.distortion_model != "fisheye4" && settings.distortion_model != "fisheye2") {
+        settings.distortion_model != "fisheye4" && settings.distortion_model != "fisheye2")
+    {
       throw std::runtime_error("鱼眼模型仅支持等距 4/2 参数畸变");
     }
     if (settings.camera_model == "pinhole" &&
-      settings.distortion_model != "brown5" && settings.distortion_model != "rational8" &&
-      settings.distortion_model != "none") {
+        settings.distortion_model != "brown5" && settings.distortion_model != "rational8" &&
+        settings.distortion_model != "none")
+    {
       throw std::runtime_error("针孔模型畸变类型无效");
     }
 
     std::ifstream manifest(manifest_path);
-    if (!manifest) {throw std::runtime_error("无法读取本次标定样本清单");}
+    if (!manifest)
+    {
+      throw std::runtime_error("无法读取本次标定样本清单");
+    }
     std::vector<std::string> paths;
     std::vector<std::vector<cv::Point3f>> object_points;
     std::vector<std::vector<cv::Point2f>> image_points;
     cv::Size image_size;
     std::string path;
-    while (std::getline(manifest, path)) {
-      if (path.empty()) {continue;}
+    while (std::getline(manifest, path))
+    {
+      if (path.empty())
+      {
+        continue;
+      }
       const cv::Mat image = cv::imread(path, cv::IMREAD_COLOR);
-      if (image.empty()) {std::cerr << "跳过无法读取的图片: " << path << '\n'; continue;}
-      if (image_size.empty()) {image_size = image.size();}
-      if (image.size() != image_size) {std::cerr << "跳过尺寸不一致的图片: " << path << '\n'; continue;}
+      if (image.empty())
+      {
+        std::cerr << "跳过无法读取的图片: " << path << '\n';
+        continue;
+      }
+      if (image_size.empty())
+      {
+        image_size = image.size();
+      }
+      if (image.size() != image_size)
+      {
+        std::cerr << "跳过尺寸不一致的图片: " << path << '\n';
+        continue;
+      }
       const auto found = danmucamera::detectBoard(image, settings.board);
-      if (!found.valid) {std::cerr << "跳过未识别特征点的图片: " << path << '\n'; continue;}
+      if (!found.valid)
+      {
+        std::cerr << "跳过未识别特征点的图片: " << path << '\n';
+        continue;
+      }
       paths.push_back(path);
       object_points.push_back(found.object_points);
       image_points.push_back(found.image_points);
     }
-    if (paths.size() < 3) {throw std::runtime_error("有效标定板图像不足 3 张");}
+    if (paths.size() < 3)
+    {
+      throw std::runtime_error("有效标定板图像不足 3 张");
+    }
     std::filesystem::create_directories(output_dir);
-    cv::Mat K = initialCamera(image_size, settings, object_points, image_points);
-    const int coefficient_count = settings.camera_model == "fisheye" ? 4 :
-      settings.distortion_model == "rational8" ? 8 : 5;
+    const std::vector<double> focal_candidates =
+        settings.camera_model != "fisheye" ? std::vector<double>{} : settings.automatic_initial ? fisheyeFocalCandidates(image_size, object_points, image_points)
+                                                                                                : std::vector<double>{settings.fx};
+    cv::Mat K = initialCamera(image_size, settings, object_points, image_points,
+                              focal_candidates.empty() ? 0.0 : focal_candidates.front());
+    const int coefficient_count = settings.camera_model == "fisheye" ? 4 : settings.distortion_model == "rational8" ? 8
+                                                                                                                    : 5;
     cv::Mat D = cv::Mat::zeros(coefficient_count, 1, CV_64F);
-    if (!settings.automatic_initial && settings.distortion_model != "none") {
-      for (int i = 0; i < coefficient_count; ++i) {
+    if (!settings.automatic_initial && settings.distortion_model != "none")
+    {
+      for (int i = 0; i < coefficient_count; ++i)
+      {
         D.at<double>(i) = settings.initial_distortion[i];
       }
     }
-    if (settings.distortion_model == "fisheye2") {
+    if (settings.distortion_model == "fisheye2")
+    {
       D.at<double>(2) = 0.0;
       D.at<double>(3) = 0.0;
     }
     std::cout << "标定板: " << settings.board.type << "，相机模型: " << settings.camera_model
-      << "，畸变模型: " << settings.distortion_model << '\n';
+              << "，畸变模型: " << settings.distortion_model << '\n';
     std::cout << "初值方式: " << (settings.automatic_initial ? "自动" : "手动") << '\n';
-    std::cout << "初始相机矩阵 K:\n"; printMatrix(K);
+    std::cout << "初始相机矩阵 K:\n";
+    printMatrix(K);
     std::vector<cv::Mat> rvecs, tvecs;
     double rms;
-    if (settings.camera_model == "fisheye") {
+    if (settings.camera_model == "fisheye")
+    {
       int flags = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC |
-        cv::fisheye::CALIB_USE_INTRINSIC_GUESS;
-      if (settings.distortion_model == "fisheye2") {
+                  cv::fisheye::CALIB_USE_INTRINSIC_GUESS;
+      if (settings.distortion_model == "fisheye2")
+      {
         flags |= cv::fisheye::CALIB_FIX_K3 | cv::fisheye::CALIB_FIX_K4;
       }
-      // OpenCV's no-guess fisheye initializer fixes f=max(w,h)/pi. On the
-      // supplied 118-degree lens that seed returned unchanged K, zero D, and
-      // a huge RMS without throwing. Try several plausible angular scales.
-      const double dimension = std::max(image_size.width, image_size.height);
-      const std::vector<double> focal_candidates = settings.automatic_initial ?
-        std::vector<double>{dimension * 0.32, dimension * 0.40,
-        dimension * 0.50, dimension * 0.625} :
-        std::vector<double>{settings.fx};
+      // The candidate range covers a wide variety of lenses; image corners
+      // determine which optimized solution actually fits this camera.
       double best_rms = std::numeric_limits<double>::infinity();
       bool best_fixed_skew = true;
       std::string last_error;
-      for (const double focal : focal_candidates) {
-        for (const bool fixed_skew : {true, false}) {
-        cv::Mat candidate_K = K.clone();
-        if (settings.automatic_initial) {
-          candidate_K.at<double>(0, 0) = focal;
-          candidate_K.at<double>(1, 1) = focal;
-        }
-        cv::Mat candidate_D = D.clone();
-        std::vector<cv::Mat> candidate_rvecs, candidate_tvecs;
-        try {
-          const double candidate_rms = cv::fisheye::calibrate(
-            object_points, image_points, image_size, candidate_K, candidate_D,
-            candidate_rvecs, candidate_tvecs,
-            flags | (fixed_skew ? cv::fisheye::CALIB_FIX_SKEW : 0),
-            cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
-          if (!std::isfinite(candidate_rms) || candidate_K.at<double>(0, 0) <= 0 ||
-            candidate_K.at<double>(1, 1) <= 0) {continue;}
-          std::cout << "鱼眼初值 fx=" << focal << "，skew "
-            << (fixed_skew ? "固定" : "自由") << "：RMS=" << candidate_rms << " px\n";
-          // Free skew adds one parameter. Require a meaningful improvement
-          // before selecting it over the simpler zero-skew model.
-          if (candidate_rms + (fixed_skew ? 0.0 : 0.005) < best_rms) {
-            best_rms = candidate_rms;
-            best_fixed_skew = fixed_skew;
-            K = candidate_K;
-            D = candidate_D;
-            rvecs = std::move(candidate_rvecs);
-            tvecs = std::move(candidate_tvecs);
+
+      // 保存原始 K、D，保证每次候选优化相互独立
+      const cv::Mat initial_K = K.clone();
+      const cv::Mat initial_D = D.clone();
+      for (const double focal : focal_candidates)
+      {
+        for (const bool fixed_skew : {true, false})
+        {
+          cv::Mat candidate_K =  initial_K.clone();
+          if (settings.automatic_initial)
+          {
+            candidate_K.at<double>(0, 0) = focal;
+            candidate_K.at<double>(1, 1) = focal;
           }
-        } catch (const cv::Exception & error) {
-          last_error = error.what();
-          std::cout << "鱼眼初值 fx=" << focal << "，skew "
-            << (fixed_skew ? "固定" : "自由") << "：求解未收敛\n";
-        }
+          cv::Mat candidate_D =  initial_D.clone();
+          std::vector<cv::Mat> candidate_rvecs, candidate_tvecs;
+          try
+          {
+            const double candidate_rms = cv::fisheye::calibrate(
+                object_points, image_points, image_size, candidate_K, candidate_D,
+                candidate_rvecs, candidate_tvecs,
+                flags | (fixed_skew ? cv::fisheye::CALIB_FIX_SKEW : 0),
+                cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
+            if (!std::isfinite(candidate_rms) || candidate_K.at<double>(0, 0) <= 0 ||
+                candidate_K.at<double>(1, 1) <= 0)
+            {
+              continue;
+            }
+            std::cout << "鱼眼初值 fx=" << focal << "，skew "
+                      << (fixed_skew ? "固定" : "自由") << "：RMS=" << candidate_rms << " px\n";
+            // Free skew adds one parameter. Require a meaningful improvement
+            // before selecting it over the simpler zero-skew model.
+            if (candidate_rms + (fixed_skew ? 0.0 : 0.005) < best_rms)
+            {
+              best_rms = candidate_rms;
+              best_fixed_skew = fixed_skew;
+              K = candidate_K;
+              D = candidate_D;
+              rvecs = std::move(candidate_rvecs);
+              tvecs = std::move(candidate_tvecs);
+            }
+          }
+          catch (const cv::Exception &error)
+          {
+            last_error = error.what();
+            std::cout << "鱼眼初值 fx=" << focal << "，skew "
+                      << (fixed_skew ? "固定" : "自由") << "：求解未收敛\n";
+          }
         }
       }
-      if (!std::isfinite(best_rms)) {
+      if (!std::isfinite(best_rms))
+      {
         throw std::runtime_error("所有鱼眼初值均求解失败: " + last_error);
       }
       rms = best_rms;
       std::cout << "鱼眼 skew 模型: " << (best_fixed_skew ? "固定为零" : "参与优化") << '\n';
-    } else {
+    }
+    else
+    {
       int flags = cv::CALIB_USE_INTRINSIC_GUESS;
-      if (settings.distortion_model == "rational8") {flags |= cv::CALIB_RATIONAL_MODEL;}
-      if (settings.distortion_model == "none") {
+      if (settings.distortion_model == "rational8")
+      {
+        flags |= cv::CALIB_RATIONAL_MODEL;
+      }
+      if (settings.distortion_model == "none")
+      {
         flags |= cv::CALIB_ZERO_TANGENT_DIST | cv::CALIB_FIX_K1 | cv::CALIB_FIX_K2 |
-          cv::CALIB_FIX_K3 | cv::CALIB_FIX_K4 | cv::CALIB_FIX_K5 | cv::CALIB_FIX_K6;
+                 cv::CALIB_FIX_K3 | cv::CALIB_FIX_K4 | cv::CALIB_FIX_K5 | cv::CALIB_FIX_K6;
       }
       rms = cv::calibrateCamera(object_points, image_points, image_size,
-        K, D, rvecs, tvecs, flags,
-        cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
+                                K, D, rvecs, tvecs, flags,
+                                cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 100, 1e-8));
     }
     // A solver returning normally is not proof that its parameters converged.
     // Reject results with pixel-scale residuals before exporting matrices and
     // undistorted images that could be mistaken for valid calibration data.
     const double max_rms = std::max(1.5, 0.001 * cv::norm(cv::Point2d(
-      image_size.width, image_size.height)));
-    if (!std::isfinite(rms) || rms > max_rms) {
+                                                     image_size.width, image_size.height)));
+    if (!std::isfinite(rms) || rms > max_rms)
+    {
       std::ostringstream error;
       error << "重投影 RMS " << rms << " px 超过可信上限 " << max_rms
-        << " px；本次结果不保存。请检查相机模型、棋盘尺寸与拍摄覆盖。";
+            << " px；本次结果不保存。请检查相机模型、棋盘尺寸与拍摄覆盖。";
       throw std::runtime_error(error.str());
     }
     std::cout << "RMS: " << std::setprecision(8) << rms << " px\n";
-    std::cout << "相机内参矩阵 K (Camera Matrix):\n"; printMatrix(K);
+    std::cout << "相机内参矩阵 K (Camera Matrix):\n";
+    printMatrix(K);
     std::cout << "镜头畸变系数 (Distortion Coefficients):\n";
     cv::Mat D_row = D.reshape(1, 1);
     printMatrix(D_row);
 
     cv::Mat fisheye_map_x, fisheye_map_y;
-    if (settings.camera_model == "fisheye") {
+    if (settings.camera_model == "fisheye")
+    {
       cv::Mat new_K;
       cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
-        K, D, image_size, cv::Matx33d::eye(), new_K, 1.0, image_size);
+          K, D, image_size, cv::Matx33d::eye(), new_K, 1.0, image_size);
       cv::fisheye::initUndistortRectifyMap(
-        K, D, cv::Matx33d::eye(), new_K, image_size, CV_16SC2,
-        fisheye_map_x, fisheye_map_y);
+          K, D, cv::Matx33d::eye(), new_K, image_size, CV_16SC2,
+          fisheye_map_x, fisheye_map_y);
       std::cout << "去畸变输出：原图尺寸，balance=1（保留更大视场）；边缘无原始像素处显示黑色\n";
     }
 
     const double scale = 3.0;
-    std::cout << "误差矢量箭头按实际像素残差放大 " << kResidualArrowMagnification
-      << " 倍；长度反映误差大小。\n";
+    std::cout << "误差矢量使用等长箭头显示方向；数字标签和 TSV 保留实际像素误差。\n";
     cv::Mat global(static_cast<int>(image_size.height * scale),
-      static_cast<int>(image_size.width * scale), CV_8UC3, cv::Scalar(17, 25, 16));
+                   static_cast<int>(image_size.width * scale), CV_8UC3, cv::Scalar(17, 25, 16));
     const auto data_path = output_dir / "visualization_data.tsv";
     const auto global_svg_path = output_dir / "global_error_vectors.svg";
     std::ofstream data(data_path);
     std::ofstream global_svg(global_svg_path);
-    if (!data || !global_svg) {throw std::runtime_error("无法创建矢量误差数据文件");}
+    if (!data || !global_svg)
+    {
+      throw std::runtime_error("无法创建矢量误差数据文件");
+    }
     data << std::setprecision(17);
     global_svg << std::setprecision(8);
     float min_x = std::numeric_limits<float>::max();
     float min_y = std::numeric_limits<float>::max();
     float max_x = std::numeric_limits<float>::lowest();
     float max_y = std::numeric_limits<float>::lowest();
-    for (const auto & points : object_points) {
-      for (const auto & point : points) {
+    for (const auto &points : object_points)
+    {
+      for (const auto &point : points)
+      {
         min_x = std::min(min_x, point.x);
         max_x = std::max(max_x, point.x);
         min_y = std::min(min_y, point.y);
@@ -365,39 +492,56 @@ int main(int argc, char ** argv)
       }
     }
     data << "META\t" << image_size.width << '\t' << image_size.height << '\t'
-      << min_x << '\t' << max_x << '\t' << min_y << '\t' << max_y << '\n';
+         << min_x << '\t' << max_x << '\t' << min_y << '\t' << max_y << '\n';
     svgHeader(global_svg, image_size);
     double all_sum = 0;
     int all_count = 0;
-    for (size_t i = 0; i < paths.size(); ++i) {
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
       std::vector<cv::Point2f> projected;
-      if (settings.camera_model == "fisheye") {
+      if (settings.camera_model == "fisheye")
+      {
         cv::fisheye::projectPoints(object_points[i], projected, rvecs[i], tvecs[i], K, D);
-      } else {
+      }
+      else
+      {
         cv::projectPoints(object_points[i], rvecs[i], tvecs[i], K, D, projected);
       }
       const cv::Mat rv = rvecs[i].reshape(1, 1);
       const cv::Mat tv = tvecs[i].reshape(1, 1);
       data << "POSE\t" << i;
-      for (int k = 0; k < 3; ++k) {data << '\t' << rv.at<double>(k);}
-      for (int k = 0; k < 3; ++k) {data << '\t' << tv.at<double>(k);}
+      for (int k = 0; k < 3; ++k)
+      {
+        data << '\t' << rv.at<double>(k);
+      }
+      for (int k = 0; k < 3; ++k)
+      {
+        data << '\t' << tv.at<double>(k);
+      }
       data << '\n';
       cv::Mat original = cv::imread(paths[i], cv::IMREAD_COLOR);
       cv::Mat error_view = original.clone();
       cv::Mat undistorted;
-      if (settings.camera_model == "fisheye") {
+      if (settings.camera_model == "fisheye")
+      {
         cv::remap(original, undistorted, fisheye_map_x, fisheye_map_y,
-          cv::INTER_LINEAR, cv::BORDER_CONSTANT);
-      } else {
+                  cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+      }
+      else
+      {
         cv::undistort(original, undistorted, K, D);
       }
       const auto svg_path = output_dir / ("error_vectors_" + std::to_string(i) + ".svg");
       std::ofstream sample_svg(svg_path);
-      if (!sample_svg) {throw std::runtime_error("无法创建单张矢量误差图");}
+      if (!sample_svg)
+      {
+        throw std::runtime_error("无法创建单张矢量误差图");
+      }
       sample_svg << std::setprecision(8);
       svgHeader(sample_svg, image_size);
       double image_sum = 0;
-      for (size_t j = 0; j < projected.size(); ++j) {
+      for (size_t j = 0; j < projected.size(); ++j)
+      {
         const cv::Point2f actual = image_points[i][j];
         const cv::Point2f estimate = projected[j];
         const cv::Point2f residual = actual - estimate;
@@ -406,7 +550,7 @@ int main(int argc, char ** argv)
         all_sum += error;
         ++all_count;
         data << "POINT\t" << i << '\t' << estimate.x << '\t' << estimate.y
-          << '\t' << actual.x << '\t' << actual.y << '\n';
+             << '\t' << actual.x << '\t' << actual.y << '\n';
         std::ostringstream value;
         value << std::fixed << std::setprecision(3) << error;
         const std::string sample_label = value.str();
@@ -416,29 +560,31 @@ int main(int argc, char ** argv)
         svgArrow(global_svg, estimate, residual, 0.85, "");
       }
       sample_svg << "</svg>\n";
-      cv::rectangle(error_view, cv::Rect(8, 8, 250, 30), cv::Scalar(16, 25, 35),
-        cv::FILLED);
-      cv::putText(error_view, "Residual arrows x32", cv::Point(16, 30),
-        cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+      cv::rectangle(error_view, cv::Rect(8, 8, 390, 30), cv::Scalar(16, 25, 35),
+                    cv::FILLED);
+      cv::putText(error_view, "Arrow: direction; label: error px", cv::Point(16, 30),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
       const double mean = image_sum / projected.size();
       const auto error_path = output_dir / ("error_vis_" + std::to_string(i) + ".png");
       const auto undistort_path = output_dir / ("undistorted_" + std::to_string(i) + ".png");
       if (!cv::imwrite(error_path.string(), error_view) ||
-        !cv::imwrite(undistort_path.string(), undistorted)) {
+          !cv::imwrite(undistort_path.string(), undistorted))
+      {
         throw std::runtime_error("无法保存误差图或去畸变图");
       }
       std::cout << "图片 [" << i << "] (" << paths[i] << ") - 平均误差: "
-        << std::fixed << std::setprecision(4) << mean << " 像素\t"
-        << pathString(error_path) << '\t' << pathString(undistort_path) << '\n';
+                << std::fixed << std::setprecision(4) << mean << " 像素\t"
+                << pathString(error_path) << '\t' << pathString(undistort_path) << '\n';
     }
     global_svg << "</svg>\n";
     cv::rectangle(global, cv::Rect(24, 24, 750, 90), cv::Scalar(16, 25, 35), cv::FILLED);
-    cv::putText(global, "Residual arrows x32", cv::Point(48, 90),
-      cv::FONT_HERSHEY_SIMPLEX, 1.65, cv::Scalar(255, 255, 255), 3, cv::LINE_AA);
+    cv::putText(global, "Equal-length arrows: direction", cv::Point(48, 90),
+                cv::FONT_HERSHEY_SIMPLEX, 1.65, cv::Scalar(255, 255, 255), 3, cv::LINE_AA);
     data.close();
     global_svg.close();
     const auto global_path = output_dir / "global_error_distribution.png";
-    if (!cv::imwrite(global_path.string(), global)) {
+    if (!cv::imwrite(global_path.string(), global))
+    {
       throw std::runtime_error("无法保存全局误差分布图");
     }
     std::cout << "全局重投影误差分布图: " << pathString(global_path) << '\n';
@@ -446,10 +592,14 @@ int main(int argc, char ** argv)
     std::cout << "位姿与误差数据: " << pathString(data_path) << '\n';
     std::cout << "平均单点误差: " << all_sum / all_count << " px\n";
     return 0;
-  } catch (const cv::Exception & error) {
+  }
+  catch (const cv::Exception &error)
+  {
     std::cerr << "OpenCV 标定失败: " << error.what() << '\n';
     return 2;
-  } catch (const std::exception & error) {
+  }
+  catch (const std::exception &error)
+  {
     std::cerr << "标定失败: " << error.what() << '\n';
     return 2;
   }

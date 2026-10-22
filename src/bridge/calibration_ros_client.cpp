@@ -6,6 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -16,7 +17,9 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <stdexcept>
 #include <thread>
 
@@ -53,6 +56,8 @@ public:
   explicit Impl(CalibrationRosClient & owner)
   : owner_(owner), node_(std::make_shared<rclcpp::Node>("calibration_ui")), running_(true)
   {
+    cloud_accumulation_frames_ = static_cast<int>(std::clamp<int64_t>(
+      node_->declare_parameter<int>("cloud_accumulation_frames", 1), 1, 30));
     corner_coverage_thresholds_.min_ratio = node_->declare_parameter<double>(
       "corner_coverage.min_ratio", 0.05);
     corner_coverage_thresholds_.max_ratio = node_->declare_parameter<double>(
@@ -138,29 +143,63 @@ public:
     image_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
       contract::kImageTopic, rclcpp::SensorDataQoS().keep_last(1),
       [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
-        receiveFrame(*message, owner_.onFrame);
+        receiveLiveFrame(*message, owner_.onFrame, image_preview_pending_);
       });
     stream_image_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
       contract::kStreamImageTopic, rclcpp::SensorDataQoS().keep_last(4),
       [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
-        receiveViewedFrame(*message, owner_.onStreamFrame);
+        if (stream_preview_pending_.exchange(true)) {return;}
+        const QImage image = QImage::fromData(
+          message->data.data(), static_cast<int>(message->data.size()));
+        if (image.isNull()) {stream_preview_pending_ = false; return;}
+        const QString signal = QString::fromStdString(message->header.frame_id);
+        dispatch([this, signal, image]() {
+          if (owner_.onStreamFrame) {owner_.onStreamFrame(signal, image);}
+          stream_preview_pending_ = false;
+        });
       });
     stream_cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
       contract::kStreamCloudTopic, rclcpp::SensorDataQoS().keep_last(1),
       [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr message) {
-        if (!owner_.onStreamCloud || message->point_step != 3 * sizeof(float) ||
-          message->data.size() < static_cast<size_t>(message->width) * message->point_step) {
+        if (!owner_.onStreamCloud || cloud_preview_pending_.exchange(true)) {return;}
+        int offset[3] = {-1, -1, -1};
+        for (const auto & field : message->fields) {
+          const int axis = field.name == "x" ? 0 : field.name == "y" ? 1 :
+            field.name == "z" ? 2 : -1;
+          if (axis >= 0 && field.datatype == sensor_msgs::msg::PointField::FLOAT32 &&
+            field.count == 1 && field.offset + sizeof(float) <= message->point_step) {
+            offset[axis] = static_cast<int>(field.offset);
+          }
+        }
+        if (message->is_bigendian || !message->width || !message->height ||
+          message->row_step < message->width * message->point_step ||
+          message->data.size() < static_cast<size_t>(message->height) * message->row_step ||
+          std::any_of(std::begin(offset), std::end(offset),
+            [](int value) {return value < 0;})) {
+          cloud_preview_pending_ = false;
           return;
         }
         std::vector<QVector3D> points;
-        points.reserve(message->width);
-        for (size_t i = 0; i < message->width; ++i) {
+        const size_t total = static_cast<size_t>(message->width) * message->height;
+        const size_t stride = std::max<size_t>(1, (total + 11999) / 12000);
+        points.reserve(std::min<size_t>(total, 12000));
+        for (size_t i = 0; i < total; i += stride) {
+          const size_t row = i / message->width, col = i % message->width;
+          const uint8_t * data = message->data.data() +
+            row * message->row_step + col * message->point_step;
           float xyz[3];
-          std::memcpy(xyz, message->data.data() + i * message->point_step, sizeof(xyz));
-          points.emplace_back(xyz[0], xyz[1], xyz[2]);
+          for (int axis = 0; axis < 3; ++axis) {
+            std::memcpy(&xyz[axis], data + offset[axis], sizeof(float));
+          }
+          if (std::isfinite(xyz[0]) && std::isfinite(xyz[1]) &&
+            std::isfinite(xyz[2]) &&
+            (xyz[0] != 0.0f || xyz[1] != 0.0f || xyz[2] != 0.0f)) {
+            points.emplace_back(xyz[0], xyz[1], xyz[2]);
+          }
         }
         dispatch([this, points = std::move(points)]() {
           if (owner_.onStreamCloud) {owner_.onStreamCloud(points);}
+          cloud_preview_pending_ = false;
         });
       });
     captured_image_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
@@ -388,6 +427,21 @@ public:
     dispatch([callback, copied]() {if (callback) {callback(copied);}});
   }
 
+  void receiveLiveFrame(
+    const sensor_msgs::msg::CompressedImage & message,
+    const std::function<void(const QImage &)> & callback,
+    std::atomic_bool & pending)
+  {
+    if (pending.exchange(true)) {return;}
+    const QImage image = QImage::fromData(
+      message.data.data(), static_cast<int>(message.data.size()));
+    if (image.isNull()) {pending = false; return;}
+    dispatch([callback, image, &pending]() {
+      if (callback) {callback(image);}
+      pending = false;
+    });
+  }
+
   void receiveViewedFrame(
     const sensor_msgs::msg::CompressedImage & message,
     const std::function<void(const QString &, const QImage &)> & callback)
@@ -406,12 +460,16 @@ public:
   }
 
   CalibrationRosClient & owner_;
+  int cloud_accumulation_frames_{1};
   rclcpp::Node::SharedPtr node_;
   GuideSettings guide_settings_;
   CornerCoverageThresholds corner_coverage_thresholds_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr stream_image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr stream_cloud_sub_;
+  std::atomic_bool image_preview_pending_{false};
+  std::atomic_bool stream_preview_pending_{false};
+  std::atomic_bool cloud_preview_pending_{false};
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr captured_image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr corner_preview_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guide_result_sub_;
@@ -460,6 +518,11 @@ CornerCoverageThresholds CalibrationRosClient::cornerCoverageThresholds() const
   return impl_->corner_coverage_thresholds_;
 }
 
+int CalibrationRosClient::cloudAccumulationFrames() const
+{
+  return impl_->cloud_accumulation_frames_;
+}
+
 bool CalibrationRosClient::spinSome()
 {
   // 为保持窗口接口简单而保留此函数；真正的 ROS spin 已在后台线程中运行。
@@ -497,17 +560,20 @@ void CalibrationRosClient::refreshTopicInputs()
 {
   if (!impl_->parameter_client_->service_is_ready()) {return;}
   impl_->parameter_client_->get_parameters(
-    {contract::extrinsic_input::kImageParameter, contract::extrinsic_input::kCloudParameter,
+    {contract::extrinsic_input::kImageParameter,
+      contract::extrinsic_input::kDepthImageParameter,
+      contract::extrinsic_input::kCloudParameter,
       contract::extrinsic_input::kCommandParameter, contract::extrinsic_input::kStatusParameter},
     [this](std::shared_future<std::vector<rclcpp::Parameter>> future) {
       const auto values = future.get();
-      if (values.size() != 4) {return;}
+      if (values.size() != 5) {return;}
       const QString image = QString::fromStdString(values[0].as_string());
-      const QString cloud = QString::fromStdString(values[1].as_string());
-      const QString command = QString::fromStdString(values[2].as_string());
-      const QString status = QString::fromStdString(values[3].as_string());
-      impl_->dispatch([this, image, cloud, command, status]() {
-        if (onTopicDefaults) {onTopicDefaults(image, cloud);}
+      const QString depth_image = QString::fromStdString(values[1].as_string());
+      const QString cloud = QString::fromStdString(values[2].as_string());
+      const QString command = QString::fromStdString(values[3].as_string());
+      const QString status = QString::fromStdString(values[4].as_string());
+      impl_->dispatch([this, image, depth_image, cloud, command, status]() {
+        if (onTopicDefaults) {onTopicDefaults(image, depth_image, cloud);}
         if (onTopicControlDefaults) {onTopicControlDefaults(command, status);}
       });
     });
@@ -558,7 +624,8 @@ void CalibrationRosClient::setExtrinsicInput(
 
 void CalibrationRosClient::connectCamera(
   int width, int height, const QString & image_topic,
-  const QString & cloud_topic, const QString & control_command,
+  const QString & depth_image_topic, const QString & cloud_topic,
+  const QString & control_command,
   const QString & control_status)
 {
   const auto topics = impl_->node_->get_topic_names_and_types();
@@ -570,10 +637,12 @@ void CalibrationRosClient::connectCamera(
   };
   const bool image_found = has_type(image_topic, contract::extrinsic_input::kRawImageType) ||
     has_type(image_topic, contract::extrinsic_input::kCompressedImageType);
+  const bool depth_image_found = has_type(depth_image_topic,
+    contract::extrinsic_input::kRawImageType);
   const bool cloud_found = has_type(cloud_topic, contract::extrinsic_input::kCloudType);
-  if (!image_found && !cloud_found) {
+  if (!image_found && !depth_image_found && !cloud_found) {
     if (onConnectionChanged) {
-      onConnectionChanged(false, "未发现已选图像或点云话题；请启动发布端并刷新");
+      onConnectionChanged(false, "未发现已选 RGB、深度图或点云话题；请启动发布端并刷新");
     }
     return;
   }
@@ -585,6 +654,8 @@ void CalibrationRosClient::connectCamera(
   std::vector<rclcpp::Parameter> parameters{
     rclcpp::Parameter("width", width), rclcpp::Parameter("height", height),
     rclcpp::Parameter(contract::extrinsic_input::kImageParameter, image_topic.toStdString()),
+    rclcpp::Parameter(contract::extrinsic_input::kDepthImageParameter,
+      depth_image_topic.toStdString()),
     rclcpp::Parameter(contract::extrinsic_input::kCloudParameter, cloud_topic.toStdString()),
     rclcpp::Parameter(contract::extrinsic_input::kCommandParameter,
       control_command.toStdString()),
@@ -594,7 +665,7 @@ void CalibrationRosClient::connectCamera(
     parameters,
     [this](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> future) {
       const auto results = future.get();
-      if (results.size() != 6 || !std::all_of(results.begin(), results.end(),
+      if (results.size() != 7 || !std::all_of(results.begin(), results.end(),
         [](const auto & result) {return result.successful;})) {
         impl_->dispatch([this, results]() {
           QString reason = QStringLiteral("设置话题参数失败");

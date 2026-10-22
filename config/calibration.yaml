@@ -4,6 +4,7 @@ calibration_camera:
     # 默认值未被发现时显示空选项；图像和点云允许任意一路为空。
     topic_input:
       name: ""
+      depth_image_name: ""
       pointcloud_name: ""
       # 可选驱动适配协议：两项同时选择才启用硬件启停；留空时只控制本程序订阅。
       # command: std_msgs/msg/Bool (true 启动、false 停止)
@@ -12,10 +13,10 @@ calibration_camera:
       control_status: ""
     width: 1280
     height: 720
-    # UI 预览无需和采集同频；15 FPS 能显著降低图像拷贝和缩放压力。
-    preview_fps: 15.0
-    preview_width: 1280
-    jpeg_quality: 90
+    # 仅预览缩放/压缩；保存标定原图始终使用输入流原始分辨率。
+    preview_fps: 24.0
+    preview_width: 960
+    jpeg_quality: 75
     output_directory: samples
 
 calibration_algorithm_bridge:
@@ -86,6 +87,7 @@ calibration_algorithm_bridge:
 
 calibration_ui:
   ros__parameters:
+    cloud_accumulation_frames: 1  # 仅 3D 预览叠加最近 N 帧；界面可随时调整
     # 九宫格角点数 / 当前总角点数；只给拍摄人员提示，不阻止标定。
     # 低于下限提示补拍该方位，高于上限提示该方位过于集中。
     corner_coverage:

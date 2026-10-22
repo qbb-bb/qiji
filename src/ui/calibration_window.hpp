@@ -106,6 +106,7 @@ private:
   QHash<QString, QWidget *> stream_panels_;
   QWidget * topic_inputs_panel_{nullptr};
   QComboBox * image_topic_edit_{nullptr};
+  QComboBox * depth_image_topic_edit_{nullptr};
   QComboBox * cloud_topic_edit_{nullptr};
   QComboBox * topic_control_command_edit_{nullptr};
   QComboBox * topic_control_status_edit_{nullptr};
@@ -123,7 +124,7 @@ private:
   bool stream_restart_pending_{false};
   bool topic_inputs_dirty_{false};
   bool topic_selection_touched_{false};
-  QString default_image_topic_, default_cloud_topic_;
+  QString default_image_topic_, default_depth_image_topic_, default_cloud_topic_;
   QString default_command_topic_, default_status_topic_;
   QString default_camera_info_topic_;
   bool emitter_change_pending_{false};

@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -51,15 +52,16 @@ public:
       throw std::runtime_error("已有一个标定 I/O 节点在运行");
     }
     declare_parameter<std::string>(contract::extrinsic_input::kImageParameter, "");
+    declare_parameter<std::string>(contract::extrinsic_input::kDepthImageParameter, "");
     declare_parameter<std::string>(contract::extrinsic_input::kCloudParameter, "");
     declare_parameter<std::string>(contract::extrinsic_input::kCommandParameter, "");
     declare_parameter<std::string>(contract::extrinsic_input::kStatusParameter, "");
     output_directory_ = declare_parameter<std::string>("output_directory", "samples");
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 720);
-    preview_width_ = declare_parameter<int>("preview_width", 1280);
-    preview_fps_ = declare_parameter<double>("preview_fps", 15.0);
-    jpeg_quality_ = declare_parameter<int>("jpeg_quality", 90);
+    preview_width_ = declare_parameter<int>("preview_width", 960);
+    preview_fps_ = declare_parameter<double>("preview_fps", 24.0);
+    jpeg_quality_ = declare_parameter<int>("jpeg_quality", 75);
     callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
     const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(1);
@@ -184,6 +186,7 @@ private:
         };
       emit(contract::extrinsic_input::kRawImageType, "Image", "rgb");
       emit(contract::extrinsic_input::kCompressedImageType, "CompressedImage", "rgb");
+      emit(contract::extrinsic_input::kRawImageType, "Image", "depth_image");
       emit(contract::extrinsic_input::kCloudType, "PointCloud2", "depth");
       emit(contract::extrinsic_input::kCameraInfoType, "CameraInfo", "camera_info");
       emit("std_msgs/msg/Bool", "Bool", "command");
@@ -196,6 +199,7 @@ private:
   {
     raw_sub_.reset();
     compressed_sub_.reset();
+    depth_image_sub_.reset();
     cloud_sub_.reset();
     control_sub_.reset();
     control_pub_.reset();
@@ -237,6 +241,8 @@ private:
       return;
     }
     const auto image_name = get_parameter(contract::extrinsic_input::kImageParameter).as_string();
+    const auto depth_image_name = get_parameter(
+      contract::extrinsic_input::kDepthImageParameter).as_string();
     const auto cloud_name = get_parameter(contract::extrinsic_input::kCloudParameter).as_string();
     const auto command_name = get_parameter(contract::extrinsic_input::kCommandParameter).as_string();
     const auto status_name = get_parameter(contract::extrinsic_input::kStatusParameter).as_string();
@@ -250,20 +256,30 @@ private:
       topics, image_name, contract::extrinsic_input::kCompressedImageType);
     const bool use_image = !image_name.empty() && (raw || compressed) &&
       !isInternal(image_name) && count_publishers(image_name) > 0;
+    const bool use_depth_image = !depth_image_name.empty() &&
+      depth_image_name != image_name && !isInternal(depth_image_name) &&
+      hasType(topics, depth_image_name, contract::extrinsic_input::kRawImageType) &&
+      count_publishers(depth_image_name) > 0;
     const bool use_cloud = !cloud_name.empty() && !isInternal(cloud_name) &&
       hasType(topics, cloud_name, contract::extrinsic_input::kCloudType) &&
       count_publishers(cloud_name) > 0;
-    if (!use_image && !use_cloud) {
-      response.message = "未发现已选图像或点云话题；请刷新来源并选择可用话题";
+    if (!use_image && !use_depth_image && !use_cloud) {
+      response.message = "未发现已选 RGB、深度图或点云话题；请刷新来源并选择可用话题";
       return;
     }
     clearSubscriptions();
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       frame_.release();
+      depth_frame_.release();
       cloud_.clear();
+      cloud_frame_id_.clear();
       frame_sequence_ = 0;
+      depth_sequence_ = 0;
+      cloud_sequence_ = 0;
       published_sequence_ = 0;
+      published_depth_sequence_ = 0;
+      published_cloud_sequence_ = 0;
       last_data_time_ = {};
     }
     rclcpp::SubscriptionOptions options;
@@ -283,6 +299,13 @@ private:
           const cv::Mat data(1, static_cast<int>(message->data.size()), CV_8UC1,
             const_cast<uint8_t *>(message->data.data()));
           receiveImage(cv::imdecode(data, cv::IMREAD_UNCHANGED));
+        }, options);
+    }
+    if (use_depth_image) {
+      depth_image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+        depth_image_name, qos,
+        [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
+          receiveDepthImage(*message);
         }, options);
     }
     if (use_cloud) {
@@ -346,8 +369,8 @@ private:
     }
     std::unique_lock<std::mutex> lock(frame_mutex_);
     const bool received = frame_cv_.wait_for(lock, 5s, [this]() {
-      return !streaming_ || !frame_.empty() || !cloud_.empty();
-    }) && streaming_ && (!frame_.empty() || !cloud_.empty());
+      return !streaming_ || !frame_.empty() || !depth_frame_.empty() || !cloud_.empty();
+    }) && streaming_ && (!frame_.empty() || !depth_frame_.empty() || !cloud_.empty());
     if (!received) {
       lock.unlock();
       streaming_ = false;
@@ -358,16 +381,22 @@ private:
         std::this_thread::sleep_for(50ms);
       }
       clearSubscriptions();
-      response.message = "5 秒内未收到图像或点云；请检查发布端与 QoS";
+      response.message = "5 秒内未收到 RGB、深度图或点云；请检查发布端与 QoS";
       return;
     }
-    if (use_image && use_cloud) {
-      frame_cv_.wait_for(lock, 750ms, [this]() {
-        return !frame_.empty() && !cloud_.empty();
+    if ((use_image && use_cloud) || (use_image && use_depth_image) ||
+      (use_depth_image && use_cloud)) {
+      frame_cv_.wait_for(lock, 750ms, [this, use_image, use_depth_image, use_cloud]() {
+        return (!use_image || !frame_.empty()) &&
+          (!use_depth_image || !depth_frame_.empty()) &&
+          (!use_cloud || !cloud_.empty());
       });
     }
     std::string streams;
     if (!frame_.empty()) {streams = "rgb";}
+    if (!depth_frame_.empty()) {
+      streams += (streams.empty() ? "" : ",") + std::string("depth_image");
+    }
     if (!cloud_.empty()) {streams += (streams.empty() ? "" : ",") + std::string("depth");}
     response.success = true;
     response.message = "Topic 已启动，可用信息流 " + streams;
@@ -404,14 +433,12 @@ private:
     if (message.encoding == "bgr8" || message.encoding == "rgb8") {type = CV_8UC3;}
     else if (message.encoding == "bgra8" || message.encoding == "rgba8") {type = CV_8UC4;}
     else if (message.encoding == "mono8" || message.encoding == "8UC1") {type = CV_8UC1;}
-    else if (message.encoding == "mono16" || message.encoding == "16UC1") {type = CV_16UC1;}
     else if (message.encoding == "yuv422" || message.encoding == "yuv422_yuy2") {
       type = CV_8UC2;
     }
     if (type < 0 || !message.width || !message.height ||
       message.step < message.width * CV_ELEM_SIZE(type) ||
       message.data.size() < static_cast<size_t>(message.height) * message.step ||
-      (type == CV_16UC1 && message.is_bigendian) ||
       (type == CV_8UC2 && message.width % 2 != 0)) {return;}
     const cv::Mat source(static_cast<int>(message.height), static_cast<int>(message.width),
       type, const_cast<uint8_t *>(message.data.data()), message.step);
@@ -424,9 +451,58 @@ private:
     } else if (message.encoding == "yuv422_yuy2") {
       cv::cvtColor(source, output, cv::COLOR_YUV2BGR_YUY2);
     }
-    else if (type == CV_16UC1) {source.convertTo(output, CV_8UC1, 1.0 / 256.0);}
     else {output = source;}
     receiveImage(output);
+  }
+
+  void receiveDepthImage(const sensor_msgs::msg::Image & message)
+  {
+    if (!streaming_ || !message.width || !message.height || message.is_bigendian) {return;}
+    const bool depth16 = message.encoding == "16UC1" || message.encoding == "mono16";
+    const bool depth32 = message.encoding == "32FC1";
+    if (!depth16 && !depth32) {return;}
+    const size_t bytes_per_pixel = depth16 ? 2 : 4;
+    if (message.step < message.width * bytes_per_pixel ||
+      message.data.size() < static_cast<size_t>(message.height) * message.step) {return;}
+    // 16UC1 通常以毫米表示，32FC1 通常以米表示。无效值保持黑色。
+    // 固定 0.2–5 m 色阶让相邻帧颜色稳定，也避免直接截取高字节导致画面发黑。
+    cv::Mat intensity(static_cast<int>(message.height), static_cast<int>(message.width), CV_8UC1);
+    cv::Mat valid(intensity.size(), CV_8UC1, cv::Scalar(0));
+    for (int row = 0; row < intensity.rows; ++row) {
+      const uint8_t * source = message.data.data() + static_cast<size_t>(row) * message.step;
+      uint8_t * target = intensity.ptr<uint8_t>(row);
+      uint8_t * mask = valid.ptr<uint8_t>(row);
+      for (int col = 0; col < intensity.cols; ++col) {
+        float metres = 0.0f;
+        if (depth16) {
+          uint16_t millimetres;
+          std::memcpy(&millimetres, source + static_cast<size_t>(col) * 2, 2);
+          if (millimetres == 0 || millimetres == UINT16_MAX) {
+            target[col] = 0;
+            continue;
+          }
+          metres = millimetres * 0.001f;
+        } else {
+          std::memcpy(&metres, source + static_cast<size_t>(col) * 4, 4);
+        }
+        if (!std::isfinite(metres) || metres <= 0) {
+          target[col] = 0;
+          continue;
+        }
+        mask[col] = 255;
+        target[col] = static_cast<uint8_t>(std::clamp(
+          (5.0f - metres) * (255.0f / 4.8f), 0.0f, 255.0f));
+      }
+    }
+    cv::Mat preview;
+    cv::applyColorMap(intensity, preview, cv::COLORMAP_TURBO);
+    preview.setTo(cv::Scalar(0, 0, 0), valid == 0);
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (!streaming_) {return;}
+    depth_frame_ = std::move(preview);
+    last_data_time_ = std::chrono::steady_clock::now();
+    ++depth_sequence_;
+    frame_cv_.notify_all();
   }
 
   void receiveCloud(const sensor_msgs::msg::PointCloud2 & message)
@@ -435,18 +511,22 @@ private:
       message.row_step < message.width * message.point_step ||
       message.data.size() < static_cast<size_t>(message.height) * message.row_step) {return;}
     int offset[3] = {-1, -1, -1};
+    uint8_t datatype[3] = {0, 0, 0};
     for (const auto & field : message.fields) {
       const int axis = field.name == "x" ? 0 : field.name == "y" ? 1 :
         field.name == "z" ? 2 : -1;
-      if (axis >= 0 && field.datatype == sensor_msgs::msg::PointField::FLOAT32 &&
-        field.count == 1 && field.offset + sizeof(float) <= message.point_step) {
+      const size_t bytes = field.datatype == sensor_msgs::msg::PointField::FLOAT32 ? 4 :
+        field.datatype == sensor_msgs::msg::PointField::FLOAT64 ? 8 : 0;
+      if (axis >= 0 && bytes && field.count == 1 &&
+        field.offset + bytes <= message.point_step) {
         offset[axis] = static_cast<int>(field.offset);
+        datatype[axis] = field.datatype;
       }
     }
     if (std::any_of(std::begin(offset), std::end(offset),
       [](int value) {return value < 0;})) {return;}
     const size_t total = static_cast<size_t>(message.width) * message.height;
-    const size_t stride = std::max<size_t>(1, total / 12000);
+    const size_t stride = std::max<size_t>(1, (total + 11999) / 12000);
     std::vector<cv::Vec3f> points;
     points.reserve(std::min<size_t>(total, 12000));
     for (size_t i = 0; i < total; i += stride) {
@@ -455,9 +535,17 @@ private:
         col * message.point_step;
       cv::Vec3f point;
       for (int axis = 0; axis < 3; ++axis) {
-        std::memcpy(&point[axis], data + offset[axis], sizeof(float));
+        if (datatype[axis] == sensor_msgs::msg::PointField::FLOAT32) {
+          std::memcpy(&point[axis], data + offset[axis], sizeof(float));
+        } else {
+          double value;
+          std::memcpy(&value, data + offset[axis], sizeof(double));
+          point[axis] = static_cast<float>(value);
+        }
       }
-      if (std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2])) {
+      if (std::isfinite(point[0]) && std::isfinite(point[1]) &&
+        std::isfinite(point[2]) &&
+        (point[0] != 0.0f || point[1] != 0.0f || point[2] != 0.0f)) {
         points.push_back(point);
       }
     }
@@ -465,8 +553,9 @@ private:
     std::lock_guard<std::mutex> lock(frame_mutex_);
     if (!streaming_) {return;}
     cloud_ = std::move(points);
+    cloud_frame_id_ = message.header.frame_id;
     last_data_time_ = std::chrono::steady_clock::now();
-    ++frame_sequence_;
+    ++cloud_sequence_;
     frame_cv_.notify_all();
   }
 
@@ -493,23 +582,36 @@ private:
 
   void publishPreview()
   {
-    cv::Mat frame;
+    cv::Mat frame, depth_frame;
     std::vector<cv::Vec3f> cloud;
+    std::string cloud_frame_id;
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
-      if (!streaming_ || frame_sequence_ == published_sequence_) {return;}
-      published_sequence_ = frame_sequence_;
-      frame = frame_.clone();
-      cloud = cloud_;
+      if (!streaming_) {return;}
+      if (frame_sequence_ != published_sequence_) {
+        published_sequence_ = frame_sequence_;
+        frame = frame_;
+      }
+      if (depth_sequence_ != published_depth_sequence_) {
+        published_depth_sequence_ = depth_sequence_;
+        depth_frame = depth_frame_;
+      }
+      if (cloud_sequence_ != published_cloud_sequence_) {
+        published_cloud_sequence_ = cloud_sequence_;
+        cloud = cloud_;
+        cloud_frame_id = cloud_frame_id_;
+      }
     }
-    if (!frame.empty()) {
+    if (!frame.empty() && image_pub_->get_subscription_count() > 0) {
       publishImage(frame, image_pub_, true);
-      publishImage(frame, stream_image_pub_, true, "rgb");
     }
-    if (!cloud.empty()) {
+    if (!depth_frame.empty() && stream_image_pub_->get_subscription_count() > 0) {
+      publishImage(depth_frame, stream_image_pub_, true, "depth_image");
+    }
+    if (!cloud.empty() && cloud_pub_->get_subscription_count() > 0) {
       sensor_msgs::msg::PointCloud2 message;
       message.header.stamp = now();
-      message.header.frame_id = "depth";
+      message.header.frame_id = cloud_frame_id;
       message.height = 1;
       message.width = static_cast<uint32_t>(cloud.size());
       message.point_step = 3 * sizeof(float);
@@ -680,13 +782,15 @@ private:
   std::atomic_bool streaming_{false};
   std::mutex frame_mutex_;
   std::condition_variable frame_cv_;
-  cv::Mat frame_, frozen_frame_;
+  cv::Mat frame_, depth_frame_, frozen_frame_;
   bool frozen_from_import_{false};
   std::vector<cv::Vec3f> cloud_;
-  uint64_t frame_sequence_{0}, published_sequence_{0};
+  std::string cloud_frame_id_;
+  uint64_t frame_sequence_{0}, depth_sequence_{0}, cloud_sequence_{0};
+  uint64_t published_sequence_{0}, published_depth_sequence_{0}, published_cloud_sequence_{0};
   std::chrono::steady_clock::time_point last_data_time_{};
-  int width_{1280}, height_{720}, preview_width_{1280}, jpeg_quality_{90};
-  double preview_fps_{15};
+  int width_{1280}, height_{720}, preview_width_{960}, jpeg_quality_{75};
+  double preview_fps_{24};
   std::string output_directory_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   std::mutex control_mutex_;
@@ -694,6 +798,7 @@ private:
   std::string control_status_;
   uint64_t control_sequence_{0};
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr raw_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_sub_;

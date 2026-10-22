@@ -40,11 +40,6 @@ add_executable(io_node src/bridge/io_node.cpp)
 target_link_libraries(io_node ${OpenCV_LIBS})
 ament_target_dependencies(io_node rclcpp sensor_msgs std_msgs std_srvs)
 
-# 独立测试驱动：只有此进程打开 V4L2 或图片文件。
-add_executable(topic_camera_driver src/driver/topic_camera_driver.cpp)
-target_link_libraries(topic_camera_driver ${OpenCV_LIBS})
-ament_target_dependencies(topic_camera_driver rclcpp sensor_msgs std_msgs)
-
 # 图像质量纯算法模块：不依赖 ROS 2 / Qt，只负责质量计算和报警判断。
 add_library(image_quality_analyzer STATIC src/algorithm/image_quality_analyzer.cpp)
 target_link_libraries(image_quality_analyzer ${OpenCV_LIBS})
@@ -79,7 +74,6 @@ ament_target_dependencies(calibration_ui rclcpp rcl_interfaces sensor_msgs std_m
 install(TARGETS
   calibration_solver
   io_node
-  topic_camera_driver
   calibration_bridge
   calibration_ui
   DESTINATION lib/${PROJECT_NAME}

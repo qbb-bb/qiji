@@ -41,6 +41,7 @@ inline constexpr char kCameraNode[] = "/calibration_camera";
 namespace extrinsic_input
 {
 inline constexpr char kImageParameter[] = "topic_input.name";
+inline constexpr char kDepthImageParameter[] = "topic_input.depth_image_name";
 inline constexpr char kCloudParameter[] = "topic_input.pointcloud_name";
 inline constexpr char kCommandParameter[] = "topic_input.control_command";
 inline constexpr char kStatusParameter[] = "topic_input.control_status";

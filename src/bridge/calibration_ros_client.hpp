@@ -140,7 +140,8 @@ public:
   void setExtrinsicInput(const QString & camera_info, double max_pair_delta_ms);
   void connectCamera(
     int width, int height, const QString & image_topic,
-    const QString & cloud_topic, const QString & control_command,
+    const QString & depth_image_topic, const QString & cloud_topic,
+    const QString & control_command,
     const QString & control_status);
   void startCamera();
   void stopCamera();
@@ -150,6 +151,7 @@ public:
   void captureForCalibration(const CalibrationSettings & settings);
   GuideSettings guideSettings() const;
   CornerCoverageThresholds cornerCoverageThresholds() const;
+  int cloudAccumulationFrames() const;
   void startGuidedDetection(const CalibrationSettings & settings);
   void stopGuidedDetection();
   void importForCalibration(
@@ -182,7 +184,7 @@ public:
   std::function<void(const QString &)> onStatus;
   std::function<void(const QString &)> onResult;
   std::function<void(const std::vector<UiTopicSource> &)> onTopics;
-  std::function<void(const QString &, const QString &)> onTopicDefaults;
+  std::function<void(const QString &, const QString &, const QString &)> onTopicDefaults;
   std::function<void(const QString &, const QString &)> onTopicControlDefaults;
   std::function<void(const QString &, double)> onExtrinsicInput;
   std::function<void(bool, const QString &)> onExtrinsicInputSaved;
